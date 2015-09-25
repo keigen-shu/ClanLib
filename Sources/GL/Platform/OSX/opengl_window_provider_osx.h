@@ -39,7 +39,7 @@ namespace clan
 {
 	class InputDeviceProvider_OSXKeyboard;
 	class InputDeviceProvider_OSXMouse;
-	class OpenGLWindowDescription;
+	class OpenGLContextDescription;
 	class OpenGLWindowProvider_Impl;
 
 	class OpenGLWindowProvider : public DisplayWindowProvider
@@ -109,6 +109,8 @@ namespace clan
 		ProcAddress *get_proc_address(const std::string& function_name) const;
 		
 		void set_pixel_ratio(float ratio) override;
+		
+		OpenGLWindowProvider_Impl *get_impl() { return impl.get(); }
 		
 	private:
 		InputDevice keyboard, mouse;
