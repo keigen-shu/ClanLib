@@ -25,9 +25,6 @@
 **
 **    Chu Chin Kuan
 */
-#include <algorithm>
-#include <cassert>
-#include <cstring> // memset
 #include <map>
 #include <string>
 #include <vector>
@@ -38,160 +35,70 @@
 
 namespace clan
 {
-	using X11AtomMap = std::map< std::string, Atom >;
-
+	//! X11 Atom handler.
 	class X11Atoms
 	{
 	public:
-		X11Atoms() : _display_(nullptr) {  }
-		X11Atoms(::Display *display) : _display_(display)
+		//! String to Atom map container.
+		using AtomMap = std::map< std::string, Atom >;
+
+		//! Static list of all atoms used by ClanLib.
+		static const std::vector< std::string > _atoms_;
+
+	public:
+		//! Empty X11Atoms initializer.
+		X11Atoms() : _display_(nullptr), _screen_(-1) { }
+		X11Atoms(::Display *display, int screen) : _display_(display), _screen_(screen)
 		{
-			log_event("debug", "Initializing X11 Display Atoms...");
-			for (const auto &elem : _atoms_)
-			{
-				_map_[elem] = XInternAtom(_display_, elem.c_str(), True);
-				log_event("debug", "  %1\t: %2", elem, (_map_[elem] == None) ? "None" : "OK");
-			}
+			clear();
+			populate();
 		}
 
-		Atom &operator[](const std::string &elem)
-		{
-			auto iter = _map_.find(elem);
-			assert(iter != _map_.end());
-			return iter->second;
-		}
+		Atom       &operator[](const std::string &elem);
+		Atom const &operator[](const std::string &elem) const;
 
-		const Atom &operator[](const std::string &elem) const
-		{
-			auto iter = _map_.find(elem);
-			assert(iter != _map_.end());
-			return iter->second;
-		}
+		bool exists(const std::string &elem) const;
 
-		bool exists(const std::string &elem) const
-		{
-			auto iter = _map_.find(elem);
-			if (iter != _map_.end())
-				return iter->second != None;
-			else
-				return false;
-		}
+		Atom get_atom(::Display *display, const char *elem, bool only_if_exists);
 
-		Atom get_atom(::Display *display, const char *elem, bool only_if_exists)
-		{
-			assert(display == _display_); // Safety check.
-			auto iter = _map_.find(elem);
-			if (iter != _map_.end())
-			{
-				return iter->second;
-			}
-			else
-			{
-				Atom atom = XInternAtom(display, elem, only_if_exists);
-				_map_[std::string(elem)] = atom;
-				return atom;
-			}
-		}
+		//! Loads Atoms from the X display.
+		void populate();
 
-		void clear()
-		{
-			_map_.clear();
-		}
+		//! Clears the AtomMap.
+		void clear();
 
 		// Important: Use XFree() on the returned pointer (if not NULL)
 		static unsigned char *get_property(::Display *display, Window window, Atom property, Atom &actual_type, int &actual_format, unsigned long &item_count);
 		static unsigned char *get_property(::Display *display, Window window, Atom property, unsigned long &item_count);
-		unsigned char *get_property(Window window, const std::string &property, unsigned long &item_count) const
+
+		inline unsigned char *get_property(Window window, const std::string &property, unsigned long &item_count) const
 		{
 			return get_property(_display_, window, (*this)[property], item_count);
 		}
 
 		//////////////////////////
-		// _NET_WM_STATE methods
+		// wm-spec related methods
 		//////////////////////////
-		std::vector<bool> check_net_wm_state(Window window, std::vector<std::string> state_atoms) const
+		inline bool is_hint_supported(const std::string &net_atom) const
 		{
-			// Atom not in _NET_WM_STATE MUST be considered not set.
-			std::vector< bool > states(state_atoms.size(), false);
-
-			if ((*this)["_NET_WM_STATE"] == None)
-			{
-				log_event("debug", "clan::X11Window::check_net_wm_state(): _NET_WM_STATE not provided by WM.");
-				return states;
-			}
-
-			// Get window states from WM
-			unsigned long  item_count;
-			unsigned char *data = get_property(window, "_NET_WM_STATE", item_count);
-			if (data == NULL)
-			{
-				log_event("debug", "clan::X11Atoms::check_net_wm_state(): Failed to query _NET_WM_STATE.");
-				return states;
-			}
-
-			unsigned long *items = (unsigned long *)data;
-
-			// Map each state atom to state boolean.
-			for (size_t i = 0; i < state_atoms.size(); i++)
-			{
-				const std::string &elem = state_atoms[i];
-				Atom state = static_cast<unsigned long>((*this)[elem]);
-				if (state == None)
-				{
-					log_event("debug", "clan::X11Atoms::check_net_wm_state(): %1 is not provided by WM.", elem);
-					continue; // Unsupported states are not queried.
-				}
-
-				auto it = std::find(items, items + item_count, state);
-				states[i] = (it != items + item_count);
-			}
-
-			XFree(data);
-			return states;
+			// No need to check for _NET_SUPPORTED, since _net_ would be empty.
+			return _net_.find(net_atom) != _net_.cend();
 		}
 
-		bool modify_net_wm_state(Window window, long action, const std::string &atom1, const std::string &atom2 = None)
-		{
-			Atom _NET_WM_STATE = (*this)["_NET_WM_STATE"];
+		//! Tests if atoms listed in `state_atoms` exist in _NET_WM_STATE.
+		//! \returns An empty vector on failure: if _NET_WM_STATE Atom does not
+		//!          exist; or if XGetWindowProperty failed. Otherwise, it will
+		//!          return a vector with the same number of elements as
+		//!          `state_atoms`.
+		std::vector<bool> check_net_wm_state(Window window, const std::vector<std::string> &state_atoms) const;
 
-			if (_NET_WM_STATE == None)
-				return false;
-
-			XEvent xevent;
-			memset(&xevent, 0, sizeof(xevent));
-			xevent.xclient.type = ClientMessage;
-			xevent.xclient.window = window;
-			xevent.xclient.message_type = _NET_WM_STATE;
-			xevent.xclient.format = 32;
-			xevent.xclient.data.l[0] =
-				xevent.xclient.data.l[1] = (*this)[atom1];
-			xevent.xclient.data.l[2] = (*this)[atom2];
-			xevent.xclient.data.l[3] = 0; // or 2
-
-			Status ret = XSendEvent(
-				_display_, DefaultRootWindow(_display_), False,
-				SubstructureNotifyMask | SubstructureRedirectMask, &xevent
-				);
-
-			XFlush(_display_);
-
-			if (ret == 0)
-			{
-				log_event("debug", "clan::X11Atoms::modify_net_wm_state(): XSendEvent failed.");
-				return false;
-			}
-			else
-			{
-				return true;
-			}
-		}
-
-	public:
-		//! List of all atoms handled by ClanLib.
-		static const std::vector< std::string > _atoms_;
+		//! \returns false on failure.
+		bool modify_net_wm_state(Window window, long action, const std::string &atom1, const std::string &atom2 = None);
 
 	private:
-		::Display* _display_;
-		X11AtomMap _map_;
+		::Display *_display_;
+		int        _screen_;
+		AtomMap    _map_;
+		AtomMap    _net_; // _NET_SUPPORTED;
 	};
 }
