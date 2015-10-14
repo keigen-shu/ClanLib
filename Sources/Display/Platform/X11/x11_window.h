@@ -69,6 +69,8 @@ namespace clan
 		void destroy();
 
 	public:
+		const DisplayWindowHandle &get_handle() const { return handle; }
+
 		float get_ppi() const { return ppi; }
 		float get_pixel_ratio() const { return pixel_ratio; }
 
@@ -79,8 +81,6 @@ namespace clan
 		Size get_minimum_size() const { return minimum_size; }
 		//! Always returns maximum size for client area.
 		Size get_maximum_size() const { return maximum_size; }
-
-		const DisplayWindowHandle &get_handle() const { return handle; }
 
 		const std::string &get_title() const { return window_title; }
 
@@ -102,17 +102,16 @@ namespace clan
 
 		std::string get_clipboard_text() const { throw Exception("Not yet implemented."); }
 		PixelBuffer get_clipboard_image() const { throw Exception("Not yet implemented."); }
+
 	public:
+		//! Sets the pixel ratio of the window.
+		void set_pixel_ratio(float new_ratio);
+
 		//! Moves the client window to a new position.
 		//!
-		//! Depending on the window manager in use, the position supplied may be
-		//! interpreted as the top-left point of _either_ the window frame or
-		//! the actual drawable client area. Major WMs (i.e. KDE `KWin 5.4.0` &
-		//! Xfce `Xfwm 4.12.3`) will do the former, while some newer or lesser
-		//! known WMs may do the latter. Until the situation improves, there is
-		//! no reliable way for us to accurately set the position of a window
-		//! while knowing whether or not they will take into account the area
-		//! taken by window frames.
+		//! The position supplied should be interpreted as the top-left point of
+		//! the window frame, not the actual drawable client area. Some ICCCM
+		//! non-compliant WMs may still move the window to a different position.
 		//!
 		//! \warn The window MUST be in mapped state or an exception will be
 		//!       thrown. The underlying X function is known to do nothing when
@@ -138,18 +137,15 @@ namespace clan
 		void set_maximum_size(const Size &new_size);
 
 
-		//! Sets the pixel ratio of the window.
-		void set_pixel_ratio(float new_ratio);
-
 		//! Sets the title of the window.
 		void set_title(const std::string &new_title);
+
+		//! Sets whether or not the window should accept input device events.
+		void set_enabled(bool new_state);
 
 		//! Sets the fullscreen state of the window. Pass in `true` to make
 		//! window go into fullscreen and `false` to go out of fullscreen.
 		void set_fullscreen(bool new_state);
-
-		//! Sets whether or not the window should accept input device events.
-		void set_enabled(bool new_state);
 
 		void minimize();
 		void maximize();
@@ -162,14 +158,19 @@ namespace clan
 
 		void request_repaint();
 
-		void set_clipboard_text(const std::string &text) { cb_text = text; /* NotifyClipboard? */ } 
+		void set_clipboard_text(const std::string &text) { cb_text = text; /* TODO: NotifyClipboard? */ } 
 		void set_clipboard_image(const PixelBuffer &pixel_buffer) { throw Exception("Setting image to clipboard is not yet implemented."); }
 
-		void show_system_cursor() { throw Exception("unimplemented"); }
-		void hide_system_cursor() { throw Exception("unimplemented"); }
+		//! Request X to use a normal pointer cursor.
+		void show_system_cursor();
 
-		void set_cursor(StandardCursor type) { throw Exception("unimplemented"); }
+		//! Request X to use an invisible pointer cursor (hence "hiding" it).
+		void hide_system_cursor();
 
+		//! Request X to use a particular preset cursor type.
+		void set_cursor(StandardCursor type);
+
+		//! Redirects mouse imput into or away from this window.
 		void capture_mouse(bool new_state);
 
 	public:
@@ -179,6 +180,11 @@ namespace clan
 
 		Point client_to_screen(const Point &client) const;
 		Point screen_to_client(const Point &screen) const;
+
+		//! Processes an XEvent on this window object.
+		//! \warn This function asserts that XEvent::window contains the same
+		//!       IS as this window _for certain event types_.
+		void process_event(XEvent &event, X11Window *mouse_capture_window);
 
 	private:
 		//! Function called at the start to X11Window::create() to prepare the
@@ -239,16 +245,24 @@ namespace clan
 
 		std::string window_title; //!< Window title. Read-only cache value.
 
+		::Cursor system_cursor;    //!< System cursor handle.
+		::Cursor invisible_cursor; //!< Invisible cursor handle.
+		Pixmap   invisible_pixmap; //!< Invisible cursor pixmap. TODO Make me global static.
+
 		InputDevice keyboard;
 		InputDevice mouse;
 		std::vector<InputDevice> joysticks;
 
+		std::function< bool(XButtonEvent&) > fn_on_click;
+
 		// X11Clipboard
 		std::string cb_text;
-		// PixelBuffer cb_image;
+		PixelBuffer cb_image;
 		
-
 		float ppi = 96.0f;
 		float pixel_ratio = 0.0f; //!< Window dip to ppx ratio. 0.0f = Unset
+
+	public: // Do not move me. Both GCC and Clang need `fn_on_click` above me to work.
+		auto func_on_click() -> decltype(fn_on_click) & { return fn_on_click; }
 	};
 }

@@ -49,10 +49,11 @@
 #include <chrono> // std::chrono::milliseconds in map_window()
 #include <new> // std::bad_alloc on xStringListToTextProperty()
 #include <thread> // std::this_thread in map_window()
-#include <unistd.h> // getpid(), gethostname(),
+#include <unistd.h> // getpid(), gethostname(), access()
 
 #include <X11/Xatom.h> // XA_CARDINAL
 #include <X11/XKBlib.h> // XkbSetDetectableAutoRepeat()
+#include <X11/cursorfont.h> // XC_...
 
 #ifndef _NET_WM_STATE_REMOVE
 #define _NET_WM_STATE_REMOVE  0
@@ -91,12 +92,12 @@ namespace clan
 
 	X11Window::X11Window()
 		: handle(), site(NULL), atoms(), colormap(0), size_hints(NULL)
+		, system_cursor(0), invisible_cursor(0), invisible_pixmap(0)
 	{
 		handle.display = SetupDisplay::get_message_queue()->get_display();
 
 		keyboard = InputDevice(new InputDeviceProvider_X11Keyboard(this));
 		mouse    = InputDevice(new InputDeviceProvider_X11Mouse   (this));
-		// TODO Joystick???
 
 		// TODO Make caller add the client by itself after calling ctor.
 		SetupDisplay::get_message_queue()->add_client(this);
@@ -112,9 +113,7 @@ namespace clan
 		mouse   .get_provider()->dispose();
 
 		for(auto &elem : joysticks)
-		{
 			elem.get_provider()->dispose();
-		}
 
 		this->destroy();
 	}
@@ -174,10 +173,10 @@ namespace clan
 		if (desc.get_position_client_area() == false) // TODO Rename to "is_position_client_area"
 			throw Exception("Window frame area positioning is not supported on X11Window");
 
-		Size window_size = Size {
-			desc.get_size().width  * pixel_ratio,
-			desc.get_size().height * pixel_ratio
-		};
+		Size window_size = Size(
+			float(desc.get_size().width ) * pixel_ratio,
+			float(desc.get_size().height) * pixel_ratio
+			);
 
 		// Minimum size clamping (to avoid negative sizes).
 		window_size.width  = std::max(_ResizeMinimumSize_, window_size.width);
@@ -245,18 +244,11 @@ namespace clan
 
 		{	// Inform the window manager who we are, so that it can kill us if
 			// we are not good for its universe.
-			if (!atoms.exists("_NET_WM_PID") || !atoms.exists("WM_CLIENT_MACHINE"))
+			if (!atoms.is_hint_supported("_NET_WM_PID") || !atoms.exists("WM_CLIENT_MACHINE"))
 				throw Exception("Missing basic X11 atoms.");
 
 			Atom atom = None;
 
-			int32_t pid = getpid();
-			if (pid > 0)
-			{
-				atom = atoms.get_atom(handle.display, "_NET_WM_PID", False);
-				XChangeProperty(handle.display, handle.window, atom, XA_CARDINAL, 32, PropModeReplace, (unsigned char *) &pid, 1);
-			}
-			
 			char hostname[256];
 			if (gethostname(hostname, sizeof(hostname)) > -1)
 			{
@@ -274,29 +266,98 @@ namespace clan
 					XFree(text_prop.value);
 #endif
 			}
+
+			int32_t pid = getpid();
+			if (pid > 0)
+			{
+				atom = atoms.get_atom(handle.display, "_NET_WM_PID", False);
+				XChangeProperty(handle.display, handle.window, atom, XA_CARDINAL, 32, PropModeReplace, (unsigned char *) &pid, 1);
+			}
 		}
 
-		// TODO Cursor code...
 		// TODO Window type/styling...
-		{	// Subscribe to WM events.
-			Atom protocol = atoms["WM_DELETE_WINDOW"];
-			Status result = XSetWMProtocols(handle.display, handle.window, &protocol, 1);
+		
+		{   // Set up WM_HINTS and WM_PROTOCOLS
+			XWMHints wm_hints = XWMHints {
+				.flags = InputHint | StateHint,
+				.input = (desc.has_no_activate() ? False : True), // See ICCCM §4.1.7
+				.initial_state = (desc.is_visible() ? NormalState : WithdrawnState),
+				.icon_pixmap = 0, // unused
+				.icon_window = 0, // unused
+				.icon_x = 0, .icon_y = 0, // unused
+				.icon_mask = 0, // unused
+				.window_group = 0 // unused
+			};
+
+			XSetWMHints(handle.display, handle.window, &wm_hints);
+
+			// Setup window protocols.
+			// We don't need to include WM_TAKE_FOCUS (ICCCM §4.1.7) because our
+			// windows either don't accept input or let WM to decide focus.
+
+			// Subscribe to WM_DELETE_WINDOW and _NET_WM_PING events.
+			std::vector<Atom> protocols;
+
+			if (atoms.exists("WM_DELETE_WINDOW"))
+				protocols.emplace_back(atoms["WM_DELETE_WINDOW"]);
+
+			if (atoms.is_hint_supported("_NET_WM_PING"))
+				protocols.emplace_back(atoms["_NET_WM_PING"]);
+
+			Status result = XSetWMProtocols(handle.display, handle.window, protocols.data(), protocols.size());
 			if (result == 0)
-				log_event("debug", "clan::X11Window::create(): Failed to set WM_DELETE_WINDOW protocol.");
+				log_event("debug", "clan::X11Window::create(): Failed to set WM protocols.");
 		}
 
 		// Set up keyboard auto-repeat.
 		Bool supports_DAR = False;
 		XkbSetDetectableAutoRepeat(handle.display, True, &supports_DAR);
 		if (supports_DAR == False)
-			log_event("debug", "X11Window::create() failed: Could not set keyboard auto-repeat.");
+			log_event("debug", "X11Window::create(): Failed to set keyboard auto-repeat.");
 
-		// TODO Set up joysticks
+		// Set up joysticks
+		for (auto &elem : joysticks)
+		{
+			elem.get_provider()->dispose();
+		}
+
+		joysticks.clear();
+#ifdef HAVE_LINUX_JOYSTICK_H
+		{
+			const std::string joydev = std::string {
+				(access("/dev/input/", R_OK | X_OK) == 0)
+				? "/dev/input/js%1"
+				: "/dev/js%1"
+			};
+
+			constexpr int _MaxJoysticks_ = 16;
+			for (int i = 0; i < _MaxJoysticks_; ++i)
+			{
+				std::string path = string_format(joydev, i);
+				if (access(path.c_str(), R_OK) == 0)
+				{
+					try
+					{
+						auto joystick_provider = new InputDeviceProvider_LinuxJoystick(this, path);
+						joysticks.emplace_back(joystick_provider);
+
+						// TODO
+						// current_window_events.push_back(joystick_provider->get_fd());
+					}
+					catch (Exception &e)
+					{
+						log_event("debug", "clan::X11Window::create(): Failed to initialize joystick '%1'", path);
+						log_event("debug", "    reason: %1", e.message);
+					}
+				}
+			}
+		}
+#endif
 
 		{ // Figure out window position.
 			this->last_position = desc.is_fullscreen() 
-				? Point { 0, 0 }
-				: Point { desc.get_position().left, desc.get_position().top };
+				? Point(0, 0)
+				: Point(desc.get_position().left, desc.get_position().top);
 
 			Size screen_size = xGetScreenSize_px();
 
@@ -341,6 +402,24 @@ namespace clan
 			handle.screen = -1;
 		}
 
+		if (system_cursor != 0)
+		{
+			XFreeCursor(handle.display, system_cursor);
+			system_cursor = 0;
+		}
+
+		if (invisible_cursor != 0)
+		{
+			XFreeCursor(handle.display, invisible_cursor);
+			invisible_cursor = 0;
+		}
+
+		if (invisible_pixmap != 0)
+		{
+			XFreePixmap(handle.display, invisible_pixmap);
+			invisible_pixmap = 0;
+		}
+
 		if (colormap != 0)
 		{
 			XFreeColormap(handle.display, colormap);
@@ -363,7 +442,8 @@ namespace clan
 		Window focus_window;
 		int    focus_state;
 		XGetInputFocus(handle.display, &focus_window, &focus_state);
-		// assert(focus_state == RevertToParent); // TODO This should always revert to parent?
+		// TODO Should this always be RevertToParent?
+		// assert(focus_state == RevertToParent); 
 		return (focus_window == handle.window);
 	}
 
@@ -383,7 +463,8 @@ namespace clan
 
 	bool X11Window::is_minimized() const
 	{
-		if (xGetWindowAttributes().map_state == IsUnmapped) // TODO Should we abort if window is unmapped? See ICCCM sec. 4.1.3.1
+		// TODO Should we just abort if window is unmapped? See ICCCM §4.1.3.1
+		if (xGetWindowAttributes().map_state == IsUnmapped) 
 			log_event("debug", "clan::X11Window::is_minimized() warning: Window is unmapped.");
 
 		// Check EWMH specified _NET_WM_STATE first.
@@ -428,7 +509,7 @@ namespace clan
 	void X11Window::map_window()
 	{
 		if (xGetWindowAttributes().map_state != IsUnmapped)
-			throw Exception("X11Window::unmap_window() failed: Window already in mapped state.");
+			throw Exception("Window already in mapped state.");
 
 		// Map the window.
 		XMapWindow(handle.display, handle.window);
@@ -463,7 +544,7 @@ namespace clan
 	void X11Window::unmap_window()
 	{
 		if (xGetWindowAttributes().map_state == IsUnmapped)
-			throw Exception("X11Window::unmap_window() failed: Window already in unmapped state.");
+			throw Exception("Window already in unmapped state.");
 
 		XUnmapWindow(handle.display, handle.window);
 		XFlush(handle.display);
@@ -673,6 +754,91 @@ namespace clan
 		// I'm doing it this way because this doesn't clutter the MQ.
 	}
 
+	void X11Window::show_system_cursor()
+	{
+		if (system_cursor == 0)
+		{
+			system_cursor = XCreateFontCursor(handle.display, XC_left_ptr);
+		}
+
+		XDefineCursor(handle.display, handle.window, system_cursor);
+	}
+
+	void X11Window::hide_system_cursor()
+	{
+		if (invisible_pixmap == 0)
+		{   // Set-up an invisible pixmap.
+			char pixmap_data[] = { 0 };
+			invisible_pixmap = XCreateBitmapFromData(handle.display, handle.window, pixmap_data, 1, 1);
+		}
+
+		if (invisible_cursor == 0)
+		{
+			XColor blank_color;
+			memset(&blank_color, 0, sizeof(blank_color));
+			invisible_cursor = XCreatePixmapCursor(
+					handle.display, invisible_pixmap, invisible_pixmap,
+					&blank_color, &blank_color, 0, 0
+					);
+		}
+
+		XDefineCursor(handle.display, handle.window, invisible_cursor);
+	}
+
+	void X11Window::set_cursor(StandardCursor type)
+	{
+		if (system_cursor != 0)
+		{
+			XFreeCursor(handle.display, system_cursor);
+			system_cursor = 0;
+		}
+
+		XID index = XC_left_ptr;
+		switch (type)
+		{
+			case StandardCursor::arrow:
+				index = XC_left_ptr;
+				break;
+			case StandardCursor::appstarting:
+				index = XC_watch;
+				break;
+			case StandardCursor::cross:
+				index = XC_cross;
+				break;
+			case StandardCursor::hand:
+				index = XC_hand2;
+				break;
+			case StandardCursor::ibeam:
+				index = XC_xterm;
+				break;
+			case StandardCursor::size_all:
+				index = XC_fleur;
+				break;
+			case StandardCursor::size_ns:
+				index = XC_double_arrow;
+				break;
+			case StandardCursor::size_we:
+				index = XC_sb_h_double_arrow;
+				break;
+			case StandardCursor::uparrow:
+				index = XC_sb_up_arrow;
+				break;
+			case StandardCursor::wait:
+				index = XC_watch;
+				break;
+			case StandardCursor::no:
+				index = XC_X_cursor;
+				break;
+			case StandardCursor::size_nesw: // TODO Expand to size_ne, size_sw
+			case StandardCursor::size_nwse: // TODO Expand to size_nw, size_se
+			default:
+				break;
+		}
+
+		system_cursor = XCreateFontCursor(handle.display, index);
+		XDefineCursor(handle.display, handle.window, system_cursor);
+	}
+
 	void X11Window::capture_mouse(bool new_state)
 	{
 		SetupDisplay::get_message_queue()->set_mouse_capture(this, new_state);
@@ -745,7 +911,6 @@ namespace clan
 		XSetWMNormalHints(handle.display, handle.window, size_hints);
 	}
 
-
 	XTextProperty X11Window::xStringListToTextProperty(const std::vector< std::string > &string_list)
 	{
 		std::vector< std::vector<char> > cstrs;
@@ -766,4 +931,270 @@ namespace clan
 
 		return text_prop;
 	}
+
+	////////////////////////////////////////////////////////////////////////////
+	// X11 Window Event Processing
+	////////////////////////////////////////////////////////////////////////////
+	void X11Window::process_event(XEvent &event, X11Window *mouse_capture_window)
+	{
+		switch(event.type)
+		{
+		// Keyboard events
+		case KeyPress:
+		case KeyRelease:
+		{
+			dynamic_cast<InputDeviceProvider_X11Keyboard *>(keyboard.get_provider())
+				->received_keyboard_input(keyboard, event.xkey);
+			break; // TODO Ugly function definition.
+		}
+		// Pointer events
+		case ButtonPress:
+		case ButtonRelease:
+		{
+			XButtonEvent e = event.xbutton;
+			// Test if button event is on masked area. If not, let it fall
+			// through our window and pass it to the window below it.
+			if (fn_on_click)
+			{
+				if (!fn_on_click(event.xbutton))
+					break;
+			}
+
+			// Translate button event position to the window capturing mouse
+			// events if it is not this window.
+			if (mouse_capture_window != this)
+			{
+				auto capturing_client_position = mouse_capture_window->client_window_position;
+				e.x += client_window_position.x - capturing_client_position.x;
+				e.y += client_window_position.y - capturing_client_position.y;
+			}
+
+			dynamic_cast<InputDeviceProvider_X11Mouse *>(mouse_capture_window->get_mouse().get_provider())
+				->received_mouse_input(mouse_capture_window->mouse, e);
+			break; // TODO Ugly function definition.
+		}
+
+		case MotionNotify:
+		{
+			XMotionEvent e = event.xmotion;
+			// Translate button event position to the window capturing mouse
+			// events if it is not this window.
+			if (mouse_capture_window != this)
+			{
+				auto capturing_client_position = mouse_capture_window->client_window_position;
+				e.x += client_window_position.x - capturing_client_position.x;
+				e.y += client_window_position.y - capturing_client_position.y;
+			}
+
+			dynamic_cast<InputDeviceProvider_X11Mouse *>(mouse_capture_window->get_mouse().get_provider())
+				->received_mouse_move(mouse_capture_window->mouse, e);
+			break; // TODO Ugly function definition.
+		}
+
+		// Window crossing events
+		case EnterNotify:
+		case LeaveNotify:
+		{
+			XCrossingEvent e = event.xcrossing;
+			// TODO DisplayWindowSite::sig_window_{enter,leave}
+			break;
+		}
+
+		// Keymap state events
+		case KeymapNotify:
+		{	// Contains the current state of the keyboard when window receives focus.
+			// TODO Update keyboard state depending on suppliedkeymap state.
+			log_event("debug", "KeymapNotify event unimplemented!");
+			break;
+		}
+
+		// Input focus events
+		case FocusIn:
+		{
+			if (site)
+			{
+				if (has_focus()) // Make sure we really did obtain focus.
+					(site->sig_got_focus)();
+				else
+					log_event("debug", "FocusIn event ignored: we really didn't gain focus.");
+					// If this triggers, please check mode.
+			}
+			break;
+		}
+		case FocusOut:
+		{
+			if (site)
+			{
+				if (!has_focus()) // Make sure we really did lose focus.
+					(site->sig_lost_focus)();
+				else
+					log_event("debug", "FocusOut event ignored: we really didn't gain focus.");
+					// If this triggers, please check mode.
+			}
+			break;
+		}
+		// Expose events
+		case Expose:
+			log_event("debug", "Expose event unimplemented!"); // TODO
+			break;
+
+		// The following two events are generated and used like so:
+		//
+		// 1. Someone calls XCopyArea or XCopyPlane to copy graphics from a
+		//    source Drawable to a destination Drawable.
+		//
+		// 2. If the sx, sy, dx, dy, width and height parameters supplied into
+		//    these functions cause them to attempt copying from a source area
+		//    that has missing content (either out-of-bounds or not available
+		//    due to being unmapped or obstructed by another window),
+		//    GraphicExpose events will be generated and sent [to whom?] in the
+		//    hopes that something would be done about it.
+		//
+		//    Otherwise, if there are no problems when copying content, a
+		//    NoExpose event is generated.
+		//
+		// Since ClanLib doesn't use these functions, it must've came from
+		// another X client. In that case, we'll simply ignore the event.
+		case GraphicsExpose:
+			log_event("debug", "Ignored GraphicsExpose event.");
+			break;
+		case NoExpose:
+			log_event("debug", "Ignored NoExpose event.");
+			break;
+
+		// Structure control events
+		// We don't care about these. They are much more interesting to WMs.
+		case CirculateRequest:
+			log_event("debug", "Ignored CirculateRequest event.");
+			break;
+		case ConfigureRequest:
+			log_event("debug", "Ignored ConfigureRequest event.");
+			break;
+		case MapRequest:
+			log_event("debug", "Ignored MapRequest event.");
+			break;
+		case ResizeRequest:
+			log_event("debug", "Ignored ResizeRequest event.");
+			break;
+
+		// Window state notification events
+		case CirculateNotify: // Ignored; we don't circulate our own subwindows.
+			// This is probably used by WMs to implement Alt-Tabbing.
+			log_event("debug", "Ignored CirculateNotify event.");
+			break;
+		case ConfigureNotify: // Interested.
+			log_event("debug", "ConfigureNotify event unimplemented!"); // TODO
+			break;
+		case CreateNotify: // Ignored; we do not create child windows.
+			log_event("debug", "Ignored CreateNotify event.");
+			break;
+		case DestroyNotify: // Ignored; currently unused.
+			// TODO Should we clean up attributes here rather than in destroy()?
+			log_event("debug", "Ignored DestroyNotify event."); // TODO
+			break;
+		case GravityNotify: // Ignored; we do not have child windows.
+			log_event("debug", "Ignored GravityNotify event.");
+			break;
+		case MapNotify: // Interested.
+			// If this window is supposed to be a modal dialog, modify all other
+			// top-level windows managed by ClanLib so that they will raise this
+			// window when they receive events.
+			log_event("debug", "MapNotify event unimplemented!"); // TODO
+			break;
+		case MappingNotify: // Ignored; unused.
+			// We don't care about mapping changes to modifier keys on keyboard
+			// (aside from Ctrl, Alt, Shift and Super) keyboard symbols (we
+			// always assume US-international layout), or pointer buttons.
+			log_event("debug", "Ignored MappingNotify event.");
+			break;
+		case ReparentNotify: // Interested if SNM. SsNM ignored because we do not create child windows.
+			// We are definitely interested in WMs messing with the positioning
+			// and sizing of our windows.
+			// TODO Update _NET_FRAME_EXTENTS after reparenting.
+			log_event("debug", "ReparentNotify event unimplemented!"); // TODO
+			break;
+
+		case UnmapNotify: // Interested.
+			// If this window is a modal dialog, revert changes to all other
+			// top-level windows managed by ClanLib back to normal.
+			log_event("debug", "UnmapNotify event unimplemented!"); // TODO
+			break;
+
+		case VisibilityNotify: // Ignored; not interesting at the moment.
+			// TODO We can use this to limit the amount of drawing.
+			log_event("debug", "Visibility event unimplemented!");
+			break;
+
+		// Colormap state notification events
+		case ColormapNotify: // Ignored; we don't care about colormaps; we only have one.
+			log_event("debug", "Ignored ColormapNotify event.");
+			break;
+
+		// Client communication events
+		case ClientMessage: // Interested. 
+		{
+			// TODO ICCCM §4.1.4 Normal->Iconic specification.
+			// TODO ICCCM §4.1.4 Normal->Withdrawn waiting (Maybe make that code
+			// scan for this event manually?)
+			if (event.xclient.message_type != atoms["WM_PROTOCOLS"])
+			{
+				log_event("debug", "ClientMessage event ignored: unknown message type.");
+				break;
+			}
+
+			unsigned long protocol = event.xclient.data.l[0];
+			if (protocol == None)
+			{
+				log_event("debug", "ClientMessage event ignored: WM_PROTOCOLS event protocol has no data.");
+				break;
+			}
+
+			if (atoms.is_hint_supported("_NET_WM_PING"))
+			{
+				Atom _NET_WM_PING = atoms["_NET_WM_PING"];
+				if (protocol == _NET_WM_PING)
+				{
+					XSendEvent(handle.display, RootWindow(handle.display, handle.screen), False, SubstructureNotifyMask | SubstructureRedirectMask, &event);
+					break;
+				}
+			}
+
+			if (atoms.exists("WM_DELETE_WINDOW"))
+			{
+				Atom WM_DELETE_WINDOW = atoms["WM_DELETE_WINDOW"];
+				if (protocol == WM_DELETE_WINDOW)
+				{
+					if (site)
+					{
+						// TODO This function does not close the window?
+						(site->sig_window_close)();
+					}
+					break;
+				}
+			}
+
+			log_event("debug", "ClientMessage event ignored: Unknown protocol.");
+			break;
+		}
+		case PropertyNotify: // May be interested... TODO research
+			// TODO EWMH _NET_FRAME_EXTENTS (Maybe make code querying this scan
+			// for this event manually?)
+			// TODO ICCCM §2?
+			log_event("debug", "PropertyNotify event unimplemented!");
+			break;
+		case SelectionClear: // INTERESTED TODO
+			log_event("debug", "SelectionClear event unimplemented!");
+			break;
+		case SelectionNotify: // INTERESTED TODO
+			log_event("debug", "SelectionNotify event unimplemented!");
+			break;
+		case SelectionRequest: // INTERESTED TODO
+			log_event("debug", "SelectionRequest event unimplemented!");
+			break;
+
+		default:
+			log_event("debug", "Ignoring event of unknown type.");
+			break;
+		} // end-switch event.type
+	} // end-fn process_event
 }
