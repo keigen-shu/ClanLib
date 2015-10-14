@@ -69,31 +69,6 @@ clanCore_includes = \
 	Core/System/userdata.h \
 	Core/System/work_queue.h \
 	Core/System/comptr.h \
-	Core/XML/xml_tokenizer.h \
-	Core/XML/dom_named_node_map.h \
-	Core/XML/dom_node_list.h \
-	Core/XML/dom_attr.h \
-	Core/XML/dom_notation.h \
-	Core/XML/dom_comment.h \
-	Core/XML/dom_string.h \
-	Core/XML/dom_character_data.h \
-	Core/XML/xpath_evaluator.h \
-	Core/XML/xpath_exception.h \
-	Core/XML/dom_entity_reference.h \
-	Core/XML/xml_token.h \
-	Core/XML/dom_processing_instruction.h \
-	Core/XML/dom_document_fragment.h \
-	Core/XML/xml_writer.h \
-	Core/XML/dom_document_type.h \
-	Core/XML/dom_element.h \
-	Core/XML/dom_entity.h \
-	Core/XML/dom_exception.h \
-	Core/XML/xpath_object.h \
-	Core/XML/dom_cdata_section.h \
-	Core/XML/dom_node.h \
-	Core/XML/dom_text.h \
-	Core/XML/dom_implementation.h \
-	Core/XML/dom_document.h \
 	Core/Zip/zip_reader.h \
 	Core/Zip/zlib_compression.h \
 	Core/Zip/zip_archive.h \
@@ -165,10 +140,7 @@ clanCore_includes = \
 	Core/IOData/html_url.h \
 	Core/Resources/file_resource_manager.h \
 	Core/Resources/resource_object.h \
-	Core/Resources/xml_resource_node.h \
-	Core/Resources/xml_resource_document.h \
 	Core/Resources/resource_manager.h \
-	Core/Resources/xml_resource_manager.h \
 	Core/Resources/resource_container.h \
 	Core/Resources/file_resource_document.h \
 	Core/Resources/resource.h \
@@ -191,6 +163,38 @@ clanCore_includes = \
 	Core/Crypto/secret.h \
 	Core/Crypto/sha224.h \
 	Core/Crypto/sha512.h
+
+clanXML_includes = \
+	xml.h \
+	XML/dom_cdata_section.h \
+	XML/dom_entity.h \
+	XML/dom_node_list.h \
+	XML/dom_document_type.h \
+	XML/dom_text.h \
+	XML/dom_comment.h \
+	XML/xpath_evaluator.h \
+	XML/dom_attr.h \
+	XML/xml_tokenizer.h \
+	XML/dom_entity_reference.h \
+	XML/dom_character_data.h \
+	XML/xml_token.h \
+	XML/xml_writer.h \
+	XML/dom_document.h \
+	XML/dom_implementation.h \
+	XML/xpath_exception.h \
+	XML/Resources/xml_resource_node.h \
+	XML/Resources/xml_resource_document.h \
+	XML/Resources/xml_resource_manager.h \
+	XML/Resources/resource_factory.h \
+	XML/dom_processing_instruction.h \
+	XML/xpath_object.h \
+	XML/dom_named_node_map.h \
+	XML/dom_notation.h \
+	XML/dom_node.h \
+	XML/dom_document_fragment.h \
+	XML/dom_string.h \
+	XML/dom_element.h \
+	XML/dom_exception.h
 
 clanDisplay_includes = \
 	display.h \
