@@ -131,7 +131,7 @@ namespace clan
 		for (const auto &elem : _atoms_)
 		{
 			_map_[elem] = XInternAtom(_display_, elem.c_str(), True);
-			log_event("debug", "  %1\t: %2", elem, (_map_[elem] == None) ? "None" : "OK");
+			log_event("debug", "  %1\t: %2 %3", elem, _map_[elem], (_map_[elem] == None) ? "None" : "OK");
 		}
 
 		// Get _NET_SUPPORTED and check for every atom.
@@ -172,6 +172,18 @@ namespace clan
 	{
 		_net_.clear();
 		_map_.clear();
+	}
+
+	std::string X11Atoms::get_name(const Atom &atom)
+	{
+		std::string name;
+		char *data = XGetAtomName(_display_, atom);
+		if (data != NULL)
+		{
+			name = data;
+			XFree(data);
+		}
+		return name;
 	}
 
 	unsigned char *X11Atoms::get_property(::Display *display, Window window, Atom property, Atom &actual_type, int &actual_format, unsigned long &item_count)

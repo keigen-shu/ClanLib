@@ -130,7 +130,7 @@ namespace clan
 		//! include the lengths of the window frames.
 		void set_minimum_size(const Size &new_size);
 
-		//! Changes the minimum size at which the client window can be resized.
+		//! Changes the maximum size at which the client window can be resized.
 		//!
 		//! The size always refers to the client drawable area and does not
 		//! include the lengths of the window frames.
@@ -186,6 +186,10 @@ namespace clan
 		//!       IS as this window _for certain event types_.
 		void process_event(XEvent &event, X11Window *mouse_capture_window);
 
+		//! Update the window. This should be called when all events have
+		//! been received.
+		void process_window();
+
 	private:
 		//! Function called at the start to X11Window::create() to prepare the
 		//! class by populating environmental (root window) parameters.
@@ -203,6 +207,17 @@ namespace clan
 
 		//! Updates client_window_position and client_window_size.
 		void refresh_client_window_attributes();
+
+		//! Sends a _NET_REQUEST_FRAME_EXTENTS event and checks if WM sends back
+		//! the appropriate PropertyNotify event.
+		//! \see EWMH's _NET_REQUEST_FRAME_EXTENTS.
+		bool request_frame_extents() const;
+
+		//! Updates `frame_extents` with the value in _NET_FRAME_EXTENTS property.
+		void refresh_frame_extents();
+
+		//! Predicate functor for XCheckIfEvent call in `request_frame_extents`.
+		static Bool xCheckIfEventPredicate_RequestFrameExtents(::Display*, XEvent*, XPointer);
 
 	private: // Xlib function wrappers.
 		XWindowAttributes xGetWindowAttributes() const;
@@ -232,8 +247,25 @@ namespace clan
 
 		XSizeHints * size_hints;
 
-		Point last_position; //!< Position supplied to previous XMoveWindow request.
+		bool is_exposed; //!< This is set when Expose event is received and reset when the screen is repainted.
+
+		//! Signifies that the window has been minimized by the WM.
+		//! This is set to true when an UnmapNotify event is received and reset
+		//! to false when MapNotify event is received
+		bool external_minimize;
+
+		//! If set to true, last_position will not be modified until a MapNotify
+		//! event is received in process_events. Once received, frame_extents
+		//! will be calculated, last_position will be adjusted accordingly and
+		//! then this boolean is set to `false`.
+		bool compensate_frame_extents_on_MapNotify;
+
+		Rect frame_extents; //!< The lengths of the window frame deco added by WM.
+
+		Point last_position; //!< Position supplied to previous XMoveWindow request or received through XConfigureEvent.
 		Size  last_size; //!< Size supplied to previous XResizeWindow request.
+
+		XConfigureEvent last_XCE; //!< The XConfigureEvent received on the previous call to process_message.
 
 		Size minimum_size; //!< Minimum size for client area. Read-only cache value.
 		Size maximum_size; //!< Maximum size for client area. Read-only cache value.
@@ -253,7 +285,8 @@ namespace clan
 		InputDevice mouse;
 		std::vector<InputDevice> joysticks;
 
-		std::function< bool(XButtonEvent&) > fn_on_click;
+		std::function<bool(XButtonEvent&)> fn_on_click;
+		std::function<void()> fn_on_resize;
 
 		// X11Clipboard
 		std::string cb_text;
@@ -263,6 +296,7 @@ namespace clan
 		float pixel_ratio = 0.0f; //!< Window dip to ppx ratio. 0.0f = Unset
 
 	public: // Do not move me. Both GCC and Clang need `fn_on_click` above me to work.
-		auto func_on_click() -> decltype(fn_on_click) & { return fn_on_click; }
+		auto func_on_click () -> decltype(fn_on_click ) & { return fn_on_click; }
+		auto func_on_resize() -> decltype(fn_on_resize) & { return fn_on_resize; }
 	};
 }

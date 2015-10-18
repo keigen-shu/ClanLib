@@ -32,6 +32,7 @@
 #include "Display/precomp.h"
 
 #include "API/Core/Text/logger.h"
+#include "API/Core/System/system.h" // clan::System::sleep
 
 #include "x11_window.h"
 
@@ -46,7 +47,6 @@
 #endif
 
 #include <cassert>
-#include <chrono> // std::chrono::milliseconds in map_window()
 #include <new> // std::bad_alloc on xStringListToTextProperty()
 #include <thread> // std::this_thread in map_window()
 #include <unistd.h> // getpid(), gethostname(), access()
@@ -91,7 +91,9 @@ namespace clan
 
 
 	X11Window::X11Window()
-		: handle(), site(NULL), atoms(), colormap(0), size_hints(NULL)
+		: handle(), site(nullptr), atoms(), colormap(0), size_hints(NULL)
+		, external_minimize(false), compensate_frame_extents_on_MapNotify(false)
+		, frame_extents(0, 0, 0, 0)
 		, system_cursor(0), invisible_cursor(0), invisible_pixmap(0)
 	{
 		handle.display = SetupDisplay::get_message_queue()->get_display();
@@ -135,8 +137,7 @@ namespace clan
 	{
 		// Setup the handle and site.
 		handle.screen = visual->screen;
-
-		site = site;
+		this->site = site;
 
 		prepare();
 
@@ -170,9 +171,6 @@ namespace clan
 		};
 
 		// Calculate the size of the window to be created.
-		if (desc.get_position_client_area() == false) // TODO Rename to "is_position_client_area"
-			throw Exception("Window frame area positioning is not supported on X11Window");
-
 		Size window_size = Size(
 			float(desc.get_size().width ) * pixel_ratio,
 			float(desc.get_size().height) * pixel_ratio
@@ -244,6 +242,7 @@ namespace clan
 
 		{	// Inform the window manager who we are, so that it can kill us if
 			// we are not good for its universe.
+			// See "Killing Hung Processes" on EWMH.
 			if (!atoms.is_hint_supported("_NET_WM_PID") || !atoms.exists("WM_CLIENT_MACHINE"))
 				throw Exception("Missing basic X11 atoms.");
 
@@ -361,9 +360,33 @@ namespace clan
 
 			Size screen_size = xGetScreenSize_px();
 
-			// NOTE This is inaccurate because it doesn't consider frame extents
-			// TODO Query _NET_REQUEST_FRAME_EXTENTS. If not available, query
-			//      _NET_FRAME_EXTENTS after map_window().
+			if (desc.get_position_client_area() == false) // TODO Rename to "is_position_client_area"
+			{
+				// Try sending _NET_REQUEST_FRAME_EXTENTS.
+				if (request_frame_extents())
+				{
+					// Adjust `last_position` now if succeeded.
+					compensate_frame_extents_on_MapNotify = false;
+
+					refresh_frame_extents();
+					
+					// Center to screen, with frame_extents considered.
+					if (last_position.x == -1)
+						last_position.x = ((screen_size.width  - last_size.width ) / 2) - frame_extents.left;
+
+					if (last_position.y == -1)
+						last_position.y = ((screen_size.height - last_size.height) / 2) - frame_extents.top;
+
+				}
+				else
+				{
+					// Adjust `last_position` after mapping the window; when
+					// a MapNotify event is received.
+					compensate_frame_extents_on_MapNotify = true;
+				}
+			}
+
+			// Center to screen.
 			if (last_position.x == -1)
 				last_position.x = (screen_size.width  - last_size.width ) / 2 - 1;
 
@@ -386,11 +409,21 @@ namespace clan
 	void X11Window::destroy()
 	{
 		// Clear cached values.
+		is_exposed = false;
+		external_minimize = false;
+		compensate_frame_extents_on_MapNotify = false;
+
+		frame_extents = Rect();
 		last_position = Point();
 		last_size = Size();
 
+		memset(&last_XCE, 0, sizeof(last_XCE));
+
 		minimum_size = Size();
 		maximum_size = Size();
+
+		client_window_position = Point();
+		client_window_size = Size();
 
 		window_title = "";
 
@@ -511,34 +544,8 @@ namespace clan
 		if (xGetWindowAttributes().map_state != IsUnmapped)
 			throw Exception("Window already in mapped state.");
 
-		// Map the window.
 		XMapWindow(handle.display, handle.window);
 		XFlush(handle.display);
-
-		// Give WM some time to map the window.
-		std::this_thread::sleep_for( std::chrono::milliseconds(500) );
-
-		XFlush(handle.display);
-		// TODO only call set_position when map window event is received.
-		try
-		{
-			// Set the window position.
-			set_position(last_position);
-			set_size(last_size);
-		}
-		catch (Exception &e)
-		{
-			if (std::string(e.what()).find("unmapped") != std::string::npos)
-			{
-				log_event("debug", "clan::X11Window::map_window() failure: ");
-				log_event("debug", "    The system took too long to map the window.");
-				log_event("debug", "    Please report this to ClanLib.");
-			}
-			else
-			{
-				throw e;
-			}
-		}
 	}
 
 	void X11Window::unmap_window()
@@ -581,6 +588,88 @@ namespace clan
 
 		client_window_size.width  = attr.width,
 		client_window_size.height = attr.height;
+	}
+
+	Bool X11Window::xCheckIfEventPredicate_RequestFrameExtents(
+			::Display *display, XEvent *event, XPointer arg
+	) {
+		X11Window *self = (X11Window*)arg;
+		assert(self->atoms.is_hint_supported("_NET_REQUEST_FRAME_EXTENTS"));
+		assert(display == self->get_handle().display);
+
+		if (event->type != PropertyNotify)
+			return False;
+
+		if (event->xproperty.window != self->get_handle().window)
+			return False;
+
+		if (event->xproperty.atom == self->atoms["_NET_REQUEST_FRAME_EXTENTS"])
+			return True;
+		else
+			return False;
+	}
+
+	bool X11Window::request_frame_extents() const
+	{
+		assert(atoms.is_hint_supported("_NET_FRAME_EXTENTS"));
+		assert(atoms.is_hint_supported("_NET_REQUEST_FRAME_EXTENTS"));
+
+		XEvent event;
+		memset(&event, 0, sizeof(event));
+
+		event.type = ClientMessage;
+		event.xclient.window = handle.window;
+		event.xclient.format = 32;
+		event.xclient.message_type = atoms["_NET_REQUEST_FRAME_EXTENTS"];
+
+		XSendEvent(handle.display, RootWindow(handle.display, handle.screen), False, SubstructureNotifyMask | SubstructureRedirectMask, &event);
+
+		int timer = 10;
+		while(true)
+		{
+			if (timer < 0)
+			{
+				log_event("debug", "clan::X11Window: Your window manager has a broken _NET_REQUEST_FRAME_EXTENTS implementation.");
+				return false;
+			}
+
+			if (XCheckIfEvent(handle.display, &event,
+					&X11Window::xCheckIfEventPredicate_RequestFrameExtents,
+					(XPointer)this
+			)) {
+				return true;
+			}
+
+			clan::System::sleep(5);
+			timer--;
+		}
+	}
+
+	void X11Window::refresh_frame_extents()
+	{
+		assert(atoms.is_hint_supported("_NET_FRAME_EXTENTS"));
+
+		unsigned long  item_count;
+		// _NET_FRAME_EXTENTS, left, right, top, bottom, CARDINAL[4]/32
+		unsigned char *data = atoms.get_property(handle.window, "_NET_FRAME_EXTENTS", item_count);
+		if (data == NULL)
+			return;
+
+		if (item_count >= 4)
+		{
+			long *cardinal = (long *)data;
+			frame_extents.left   = cardinal[0];
+			frame_extents.right  = cardinal[1];
+			frame_extents.top    = cardinal[2];
+			frame_extents.bottom = cardinal[3];
+		}
+
+		XFree(data);
+
+		log_event("debug", "clan::X11Window::refresh_frame_extents(): Got L%1, T%2, R%3, B%4",
+				frame_extents.left, frame_extents.top,
+				frame_extents.right, frame_extents.bottom
+				);
 	}
 
 	////
@@ -735,7 +824,12 @@ namespace clan
 
 	void X11Window::show(bool activate)
 	{
-		map_window();
+		// TODO clan::TopLevelWindow calls show() even when window is mapped.
+		// I'd prefer that this function throws an exception when a window is
+		// already mapped.
+		if (xGetWindowAttributes().map_state == IsUnmapped)
+			map_window();
+
 		if (activate)
 			set_enabled(true);
 	}
@@ -748,10 +842,9 @@ namespace clan
 
 	void X11Window::request_repaint()
 	{
+		// TODO Properly generate ExposeEvents. This is the lazy way.
 		XClearArea(handle.display, handle.window, 0, 0, 1, 1, true);
 		XFlush(handle.display);
-		// TODO Generate ExposeEvents, cache them in MQ, then paint.
-		// I'm doing it this way because this doesn't clutter the MQ.
 	}
 
 	void X11Window::show_system_cursor()
@@ -829,8 +922,8 @@ namespace clan
 			case StandardCursor::no:
 				index = XC_X_cursor;
 				break;
-			case StandardCursor::size_nesw: // TODO Expand to size_ne, size_sw
-			case StandardCursor::size_nwse: // TODO Expand to size_nw, size_se
+			case StandardCursor::size_nesw: // TODO Expand SC to size_ne, size_sw
+			case StandardCursor::size_nwse: // TODO Expand SC to size_nw, size_se
 			default:
 				break;
 		}
@@ -995,7 +1088,7 @@ namespace clan
 		case EnterNotify:
 		case LeaveNotify:
 		{
-			XCrossingEvent e = event.xcrossing;
+			// XCrossingEvent e = event.xcrossing;
 			// TODO DisplayWindowSite::sig_window_{enter,leave}
 			break;
 		}
@@ -1003,7 +1096,7 @@ namespace clan
 		// Keymap state events
 		case KeymapNotify:
 		{	// Contains the current state of the keyboard when window receives focus.
-			// TODO Update keyboard state depending on suppliedkeymap state.
+			// TODO Update keyboard state depending on supplied keymap state.
 			log_event("debug", "KeymapNotify event unimplemented!");
 			break;
 		}
@@ -1017,7 +1110,7 @@ namespace clan
 					(site->sig_got_focus)();
 				else
 					log_event("debug", "FocusIn event ignored: we really didn't gain focus.");
-					// If this triggers, please check mode.
+					// If this triggers, please check focus mode.
 			}
 			break;
 		}
@@ -1028,15 +1121,23 @@ namespace clan
 				if (!has_focus()) // Make sure we really did lose focus.
 					(site->sig_lost_focus)();
 				else
-					log_event("debug", "FocusOut event ignored: we really didn't gain focus.");
-					// If this triggers, please check mode.
+					log_event("debug", "FocusOut event ignored: we really didn't lose focus.");
+					// If this triggers, please check focus mode.
 			}
 			break;
 		}
 		// Expose events
 		case Expose:
-			log_event("debug", "Expose event unimplemented!"); // TODO
+		{
+			if (event.xexpose.count == 0)
+			{
+				if (site)
+				{
+					(site->sig_paint)();
+				}
+			}
 			break;
+		}
 
 		// The following two events are generated and used like so:
 		//
@@ -1083,8 +1184,71 @@ namespace clan
 			log_event("debug", "Ignored CirculateNotify event.");
 			break;
 		case ConfigureNotify: // Interested.
-			log_event("debug", "ConfigureNotify event unimplemented!"); // TODO
+		{
+			const XConfigureEvent &curr_XCE = event.xconfigure;
+			if (curr_XCE.window != this->handle.window)
+			{
+				log_event("debug", "Ignored ConfigureNotify event: not for this window.");
+				break;
+			}
+
+
+			if (last_XCE.x != curr_XCE.x || last_XCE.y != curr_XCE.y)
+			{
+				// Do not update `last_position` if that member is true because
+				// the value in received XCE likely to be gibberish.
+				// More importantly, we will be calling `set_position` again
+				// with values based on `last_position`, so we mustn't change it
+				// until a MapNotify event is received.
+				if (compensate_frame_extents_on_MapNotify)
+				{
+					// Do not update last_position because we will be calling
+					// set_position again with different values.
+#ifdef DEBUG
+					log_event(
+							"debug", "ConfigureNotify event: move +%1+%2 -> +%3+%4. Ignored.",
+							last_XCE.x, last_XCE.y, curr_XCE.x, curr_XCE.y
+							);
+#endif
+				}
+				else
+				{
+#ifdef DEBUG
+					log_event(
+							"debug", "ConfigureNotify event: move +%1+%2 -> +%3+%4.",
+							last_XCE.x, last_XCE.y, curr_XCE.x, curr_XCE.y
+							);
+#endif
+					last_position = { curr_XCE.x, curr_XCE.y };
+					if (site)
+						(site->sig_window_moved)();
+				}
+			}
+
+			if (last_XCE.width != curr_XCE.width || last_XCE.height != curr_XCE.height)
+			{
+#ifdef DEBUG
+				log_event("debug", "ConfigureNotify event: size %1x%2 -> %3x%4.", last_XCE.width, last_XCE.height, curr_XCE.width, curr_XCE.height);
+#endif
+				last_size = { curr_XCE.width, curr_XCE.height };
+
+				if (fn_on_resize)
+				{
+					fn_on_resize(); // OpenGLWindowProvider::on_window_resized
+				}
+
+				if (site)
+				{
+					Sizef size_dip { pixel_ratio * last_size.width, pixel_ratio * last_size.height };
+					(site->sig_resize)(size_dip.width, size_dip.height); // TopLevelWindow_Impl::on_resize
+					// (site->func_window_resize)(size_dip); // TODO What is this?
+				}
+
+			}
+
+			last_XCE = curr_XCE;
 			break;
+		}
 		case CreateNotify: // Ignored; we do not create child windows.
 			log_event("debug", "Ignored CreateNotify event.");
 			break;
@@ -1096,11 +1260,57 @@ namespace clan
 			log_event("debug", "Ignored GravityNotify event.");
 			break;
 		case MapNotify: // Interested.
+		{
+			XMapEvent e = event.xmap;
+			if (e.window != handle.window)
+			{
+				log_event("debug", "MapNotify event ignored: It's not about this window.");
+				break;
+			}
+
+			if (compensate_frame_extents_on_MapNotify)
+			{
+				clan::System::sleep(50);
+
+				refresh_frame_extents();
+				last_position.x -= frame_extents.left;
+				last_position.y -= frame_extents.top;
+
+				// Set the window position.
+				set_position(last_position);
+
+				compensate_frame_extents_on_MapNotify = false;
+			}
+
+			if (site && external_minimize)
+			{
+				(site->sig_window_restored)();
+				external_minimize = false;
+			}
+
+			// TODO Improve modal dialog integration
 			// If this window is supposed to be a modal dialog, modify all other
 			// top-level windows managed by ClanLib so that they will raise this
-			// window when they receive events.
-			log_event("debug", "MapNotify event unimplemented!"); // TODO
+			// window when they receive events
 			break;
+		}
+		case UnmapNotify: // Interested.
+		{
+			XUnmapEvent e = event.xunmap;
+			if (e.window != handle.window)
+			{
+				log_event("debug", "UnmapNotify event ignored: It's not about this window.");
+				break;
+			}
+
+			external_minimize = true;
+			if (site) (site->sig_window_minimized)();
+			// TODO Improve modal dialog integration
+			// If this window is a modal dialog, revert changes to all other
+			// top-level windows managed by ClanLib back to normal.
+			break;
+		}
+
 		case MappingNotify: // Ignored; unused.
 			// We don't care about mapping changes to modifier keys on keyboard
 			// (aside from Ctrl, Alt, Shift and Super) keyboard symbols (we
@@ -1112,12 +1322,6 @@ namespace clan
 			// and sizing of our windows.
 			// TODO Update _NET_FRAME_EXTENTS after reparenting.
 			log_event("debug", "ReparentNotify event unimplemented!"); // TODO
-			break;
-
-		case UnmapNotify: // Interested.
-			// If this window is a modal dialog, revert changes to all other
-			// top-level windows managed by ClanLib back to normal.
-			log_event("debug", "UnmapNotify event unimplemented!"); // TODO
 			break;
 
 		case VisibilityNotify: // Ignored; not interesting at the moment.
@@ -1154,6 +1358,7 @@ namespace clan
 				Atom _NET_WM_PING = atoms["_NET_WM_PING"];
 				if (protocol == _NET_WM_PING)
 				{
+					log_event("debug", "ClientMessage event: _NET_WM_PING");
 					XSendEvent(handle.display, RootWindow(handle.display, handle.screen), False, SubstructureNotifyMask | SubstructureRedirectMask, &event);
 					break;
 				}
@@ -1164,24 +1369,42 @@ namespace clan
 				Atom WM_DELETE_WINDOW = atoms["WM_DELETE_WINDOW"];
 				if (protocol == WM_DELETE_WINDOW)
 				{
+					log_event("debug", "ClientMessage event: WM_DELETE_WINDOW");
 					if (site)
 					{
-						// TODO This function does not close the window?
 						(site->sig_window_close)();
 					}
 					break;
 				}
 			}
 
-			log_event("debug", "ClientMessage event ignored: Unknown protocol.");
+			log_event("debug", "ClientMessage event ignored: %1 protocol unimplemented.", atoms.get_name(protocol));
 			break;
 		}
 		case PropertyNotify: // May be interested... TODO research
+		{
+			if (site) break; // Not interested if site is not defined.
+
+			const XPropertyEvent &e = event.xproperty;
+
+			log_event("debug", "PropertyNotify event: %1", atoms.get_name(e.atom));
+			if (e.atom == atoms["_NET_WM_STATE"])
+			{
+				if (e.state == PropertyNewValue)
+				{
+
+				}
+				else if (e.state == PropertyDelete)
+				{
+
+				}
+			}
+
 			// TODO EWMH _NET_FRAME_EXTENTS (Maybe make code querying this scan
 			// for this event manually?)
 			// TODO ICCCM §2?
-			log_event("debug", "PropertyNotify event unimplemented!");
 			break;
+		}
 		case SelectionClear: // INTERESTED TODO
 			log_event("debug", "SelectionClear event unimplemented!");
 			break;

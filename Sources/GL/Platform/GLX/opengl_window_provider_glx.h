@@ -162,130 +162,144 @@ public:
 
 class OpenGLWindowProvider : public DisplayWindowProvider
 {
-/// \name Construction
-/// \{
-
 public:
 	OpenGLWindowProvider(OpenGLContextDescription &opengl_desc);
-
 	~OpenGLWindowProvider();
 
-/// \}
-/// \name Attributes
-/// \{
+public: // OpenGL-related attributes
+	constexpr static bool is_double_buffered() { return true; }
 
-public:
-	bool is_double_buffered() const { return true; }
+	//! Retrieves the GLX rendering context for this window.
+	GLXContext get_opengl_context() { return opengl_context; }
+
+	//! Retrieves the GraphicContext for this window.
+	GraphicContext &get_gc() override { return gc; }
+
+public: // GLX-related operations
+	GLXContext create_context(const DisplayWindowDescription &desc);
+
+public: // X11Window-related attributes (mirror)
+	DisplayWindowHandle get_handle() const override { return x11_window.get_handle(); }
+
+	float get_pixel_ratio() const override { return x11_window.get_pixel_ratio(); }
 
 	Rect get_geometry() const override { return x11_window.get_geometry(); }
 	Rect get_viewport() const override { return x11_window.get_viewport(); }
 
-	float get_pixel_ratio() const override { return x11_window.get_pixel_ratio(); }
-
-	bool has_focus() const override { return x11_window.has_focus(); }
-	bool is_fullscreen() const override { return x11_window.is_fullscreen(); }
-	bool is_minimized() const override { return x11_window.is_minimized(); }
-	bool is_maximized() const override { return x11_window.is_maximized(); }
-	bool is_visible() const override { return x11_window.is_visible(); }
-
-	bool is_clipboard_text_available() const override { return x11_window.is_clipboard_text_available(); }
-	bool is_clipboard_image_available() const override { return x11_window.is_clipboard_image_available(); }
+	Size get_minimum_size(bool of_client_area) const override { if (!of_client_area) throw Exception("X window frame extent querying is not supported yet."); return x11_window.get_minimum_size(); }
+	Size get_maximum_size(bool of_client_area) const override { if (!of_client_area) throw Exception("X window frame extent querying is not supported yet."); return x11_window.get_maximum_size(); }
 
 	std::string get_title() const override { return x11_window.get_title(); }
-	Size get_minimum_size(bool client_area) const override { return x11_window.get_minimum_size(client_area); }
-	Size get_maximum_size(bool client_area) const override { return x11_window.get_maximum_size(client_area); }
 
-	std::string get_clipboard_text() const override { return x11_window.get_clipboard_text(); }
+	bool has_focus() const override { return x11_window.has_focus(); }
 
-	PixelBuffer get_clipboard_image() const override { return x11_window.get_clipboard_image(); }
+	bool is_fullscreen() const override { return x11_window.is_fullscreen(); }
 
-	DisplayWindowHandle get_handle() const override { return x11_window.get_handle(); }
+	bool is_minimized() const override { return x11_window.is_minimized(); }
+	bool is_maximized() const override { return x11_window.is_maximized(); }
 
-	/// \brief Returns the GLX rendering context for this window.
-	GLXContext get_opengl_context() { return opengl_context; }
-
-	GraphicContext& get_gc() override { return gc; }
+	bool is_visible() const override { return x11_window.is_visible(); }
 
 	InputDevice &get_keyboard() override { return x11_window.get_keyboard(); }
 	InputDevice &get_mouse() override { return x11_window.get_mouse(); }
 	std::vector<InputDevice> &get_game_controllers() override { return x11_window.get_game_controllers(); }
 
-	GraphicContext gc;
+	bool is_clipboard_text_available() const override { return x11_window.is_clipboard_text_available(); }
+	bool is_clipboard_image_available() const override { return x11_window.is_clipboard_image_available(); }
 
-	GL_GLXFunctions glx;
+	std::string get_clipboard_text() const override { return x11_window.get_clipboard_text(); }
+	PixelBuffer get_clipboard_image() const override { return x11_window.get_clipboard_image(); }
 
+public: // ?
 	ProcAddress *get_proc_address(const std::string& function_name) const;
 
-/// \}
-/// \name Operations
-/// \{
-
-public:
 	void make_current() const;
-	void destroy() { delete this; }
-
-	Point client_to_screen(const Point &client) override { return x11_window.client_to_screen(client); }
-	Point screen_to_client(const Point &screen) override { return x11_window.screen_to_client(screen); }
 
 	void create(DisplayWindowSite *site, const DisplayWindowDescription &description) override;
+	// void destroy() { delete this; }
 
-	void show_system_cursor() override { x11_window.show_system_cursor(); }
-	CursorProvider *create_cursor(const CursorDescription &cursor_description) override;
-	void set_cursor(CursorProvider *cursor) override;
-	void set_cursor(StandardCursor type) override { x11_window.set_cursor(type); }
-	void hide_system_cursor() override  { x11_window.hide_system_cursor(); }
+public: // X11Window operation mirror
+	void set_pixel_ratio(float ratio) override { return x11_window.set_pixel_ratio(ratio); }
+
+	void set_position(const Rect &rect, bool of_client_area) override
+	{
+		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
+		x11_window.set_size(rect.get_size());
+		x11_window.set_position(rect.get_top_left());
+	}
+
+	void set_size(int width, int height, bool of_client_area) override
+	{
+		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
+		x11_window.set_size({ width, height });
+	}
+
+	void set_minimum_size(int width, int height, bool of_client_area) override
+	{
+		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
+		x11_window.set_minimum_size({ width, height });
+	}
+
+	void set_maximum_size(int width, int height, bool of_client_area) override
+	{
+		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
+		x11_window.set_maximum_size({ width, height });
+	}
 
 	void set_title(const std::string &new_title) override { x11_window.set_title(new_title); }
-	void set_position(const Rect &pos, bool client_area) override { return x11_window.set_position(pos, client_area); }
 
-	void set_pixel_ratio(float ratio) override { return x11_window.set_pixel_ratio(ratio); }
-	void set_size(int width, int height, bool client_area) override { return x11_window.set_size(width, height, client_area); }
-	void set_minimum_size(int width, int height, bool client_area) override { return x11_window.set_minimum_size(width, height, client_area); }
-	void set_maximum_size( int width, int height, bool client_area) override { return x11_window.set_maximum_size(width, height, client_area); }
+	void set_enabled(bool new_state) override { return x11_window.set_enabled(new_state); }
 
-	void set_enabled(bool enable) override { return x11_window.set_enabled(enable); }
+	void toggle_fullscreen() override { x11_window.set_fullscreen(!x11_window.is_fullscreen()); }
 
 	void minimize() override { x11_window.minimize(); }
 	void restore() override { x11_window.restore(); }
 	void maximize() override { x11_window.maximize(); }
-	void toggle_fullscreen() override { } // FIXME: real implementation
-	void show(bool activate) override  { x11_window.show(activate); }
-	void hide() override { x11_window.hide(); }
+
 	void bring_to_front() override { x11_window.bring_to_front(); }
 
-	/// \brief Flip opengl buffers.
+	void show(bool activate) override  { x11_window.show(activate); }
+	void hide() override { x11_window.hide(); }
+
+	void request_repaint() override { x11_window.request_repaint(); }
+
+	void set_clipboard_text(const std::string &text) override { x11_window.set_clipboard_text(text); }
+	void set_clipboard_image(const PixelBuffer &buf) override { x11_window.set_clipboard_image(buf); }
+
+	void show_system_cursor() override { x11_window.show_system_cursor(); }
+	void hide_system_cursor() override  { x11_window.hide_system_cursor(); }
+
+	void set_cursor(StandardCursor type) override { x11_window.set_cursor(type); }
+	void set_cursor(CursorProvider *cursor) override;
+
+	CursorProvider *create_cursor(const CursorDescription &cursor_description) override;
+
+public: // X11Window-related const operations
+	Point client_to_screen(const Point &client) override { return x11_window.client_to_screen(client); }
+	Point screen_to_client(const Point &screen) override { return x11_window.screen_to_client(screen); }
+
+public: // Other DisplayWindow operations
+	//! Flip OpenGL buffers.
 	void flip(int interval) override;
+
+	//! Process window messages
+	void process_messages();
 
 	/// \brief Capture/Release the mouse.
 	void capture_mouse(bool capture) override { x11_window.capture_mouse(capture); }
 
-	void process_messages();
+	void set_large_icon(const PixelBuffer &image) override { /* x11_window.set_large_icon(image); */ }
+	void set_small_icon(const PixelBuffer &image) override { /* x11_window.set_small_icon(image); */ }
 
-	GLXContext create_context(const DisplayWindowDescription &desc);
+	void extend_frame_into_client_area(int, int, int, int) override
+	{ throw Exception("Not supported on Linux."); } // There is no way to tell a WM to take ownership of client area through Xlib.
 
-	/// \brief Check for window messages
-	/** \return true when there is a message*/
-	//bool has_messages() { return x11_window.has_messages(); }
+	void enable_alpha_channel(const Rect &blur_rect) override
+	{ throw Exception("This function is for Windows only."); }
 
-	void set_clipboard_text(const std::string &text) override { x11_window.set_clipboard_text(text); }
-
-	void set_clipboard_image(const PixelBuffer &buf) override { x11_window.set_clipboard_image(buf); }
-
-	void request_repaint() override { x11_window.request_repaint(); }
-
-	void set_large_icon(const PixelBuffer &image) override;
-	void set_small_icon(const PixelBuffer &image) override;
-
-	void enable_alpha_channel(const Rect &blur_rect) override;
-	void extend_frame_into_client_area(int left, int top, int right, int bottom) override;
-
-/// \}
-/// \name Implementation
-/// \{
-
-private:
-
+private: // Implementation
 	bool on_clicked(XButtonEvent &event);
+	void on_window_resized();
 
 	GLXContext create_context_glx_1_3(const DisplayWindowDescription &desc, GLXContext shared_context);
 	GLXContext create_context_glx_1_2(const DisplayWindowDescription &desc, GLXContext shared_context);
@@ -294,13 +308,15 @@ private:
 	GLXContext create_context_glx_1_3_helper(GLXContext shared_context, int major_version, int minor_version, const DisplayWindowDescription &desc, ptr_glXCreateContextAttribs glXCreateContextAttribs);
 	void get_opengl_version(int &version_major, int &version_minor);
 
-	void on_window_resized();
-
 	bool is_glx_extension_supported(const char *ext_name);
 
 	void setup_extension_pointers();
 
 	X11Window x11_window;
+
+	GL_GLXFunctions glx;
+
+	GraphicContext gc;
 
 	/// \brief GLX rendering context handle.
 	GLXContext opengl_context;

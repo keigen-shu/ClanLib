@@ -67,6 +67,8 @@ namespace clan
 		//! Clears the AtomMap.
 		void clear();
 
+		std::string get_name(const Atom &atom);
+
 		// Important: Use XFree() on the returned pointer (if not NULL)
 		static unsigned char *get_property(::Display *display, Window window, Atom property, Atom &actual_type, int &actual_format, unsigned long &item_count);
 		static unsigned char *get_property(::Display *display, Window window, Atom property, unsigned long &item_count);
