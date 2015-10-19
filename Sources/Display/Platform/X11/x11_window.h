@@ -74,8 +74,8 @@ namespace clan
 		float get_ppi() const { return ppi; }
 		float get_pixel_ratio() const { return pixel_ratio; }
 
-		Rect get_geometry() const { throw Exception("EWMH Frame extents not yet implemented."); }
-		Rect get_viewport() const { return { 0, 0, client_window_size }; }
+		Rect get_geometry() const { return Rect::xywh(last_position.x, last_position.y, last_size.width + frame_extents.left + frame_extents.right, last_size.height + frame_extents.top + frame_extents.bottom); }
+		Rect get_viewport() const { return { 0, 0, last_size }; }
 
 		//! Always returns minimum size for client area.
 		Size get_minimum_size() const { return minimum_size; }
@@ -186,9 +186,16 @@ namespace clan
 		//!       IS as this window _for certain event types_.
 		void process_event(XEvent &event, X11Window *mouse_capture_window);
 
-		//! Update the window. This should be called when all events have
-		//! been received.
+		//! Update the window. This should be called after the event queue has
+		//! been cleared.
 		void process_window();
+
+		//! Retrieves keyboard modifier key state. TODO Other modkeys like Super.
+		void get_keyboard_modifiers(bool &mod_shift, bool &mod_alt, bool &mod_ctrl) const;
+
+		//! Retrieves mouse position.
+		Point get_mouse_position() const;
+
 
 	private:
 		//! Function called at the start to X11Window::create() to prepare the

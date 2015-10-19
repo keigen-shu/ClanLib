@@ -66,8 +66,13 @@ namespace clan
 		int win_y_return = 0;
 		unsigned int mask_return;
 
-		XQueryPointer(window->get_display(), window->get_window(), &root_return, &child_return,
-			&root_x_return, &root_y_return, &win_x_return, &win_y_return, &mask_return);
+		XQueryPointer(
+				window->get_handle().display, window->get_handle().window,
+				&root_return, &child_return,
+				&root_x_return, &root_y_return,
+				&win_x_return, &win_y_return,
+				&mask_return
+				);
 		return Point{ win_x_return, win_y_return };
 	}
 
@@ -116,7 +121,7 @@ namespace clan
 
 	void InputDeviceProvider_X11Mouse::set_device_position(int x, int y)
 	{
-		XWarpPointer(window->get_display(), None, window->get_window(), 0, 0, 0, 0, x, y);
+		XWarpPointer(window->get_handle().display, None, window->get_handle().window, 0, 0, 0, 0, x, y);
 	}
 
 	void InputDeviceProvider_X11Mouse::received_mouse_input(InputDevice &mouse, XButtonEvent &event)

@@ -61,8 +61,8 @@ namespace clan
 
 		char keyboard_state[32];
 
-		InputCode code = (InputCode)XKeysymToKeycode(window->get_display(), keycode);
-		XQueryKeymap(window->get_display(), keyboard_state);
+		InputCode code = (InputCode)XKeysymToKeycode(window->get_handle().display, keycode);
+		XQueryKeymap(window->get_handle().display, keyboard_state);
 
 		return keyboard_state[code / 8] & (1 << code % 8);
 	}
@@ -114,7 +114,7 @@ namespace clan
 		key.mouse_pos = Pointf(window->get_mouse_position()) / window->get_pixel_ratio();
 		key.mouse_device_pos = window->get_mouse_position();
 
-		KeySym key_symbol = XkbKeycodeToKeysym(window->get_display(), key_code, 0, 0);
+		KeySym key_symbol = XkbKeycodeToKeysym(window->get_handle().display, key_code, 0, 0);
 
 		bool keypressed = get_keycode(key_symbol);
 

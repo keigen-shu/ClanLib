@@ -160,10 +160,9 @@ namespace clan
 			.backing_planes         = -1ul,
 			.backing_pixel          =  0ul,
 			.save_under             = False,
-			.event_mask             = ExposureMask | StructureNotifyMask | FocusChangeMask | PropertyChangeMask, // TODO Everything needed 
-									// desc.has_no_activate() // Activate only if described
-									//	? xWinAttrEventMaskWhenDisabled
-									//	: xWinAttrEventMaskWhenEnabled,
+			.event_mask             = desc.has_no_activate() // Activate only if described
+										? xWinAttrEventMaskWhenDisabled
+										: xWinAttrEventMaskWhenEnabled,
 			.do_not_propagate_mask  = NoEventMask,
 			.override_redirect      = False,
 			.colormap               = this->colormap,
@@ -546,6 +545,7 @@ namespace clan
 
 		XMapWindow(handle.display, handle.window);
 		XFlush(handle.display);
+		clan::System::sleep(50);
 	}
 
 	void X11Window::unmap_window()
@@ -611,8 +611,11 @@ namespace clan
 
 	bool X11Window::request_frame_extents() const
 	{
-		assert(atoms.is_hint_supported("_NET_FRAME_EXTENTS"));
-		assert(atoms.is_hint_supported("_NET_REQUEST_FRAME_EXTENTS"));
+		if (!atoms.exists("_NET_FRAME_EXTENTS"))
+			return false;
+
+		if (!atoms.exists("_NET_REQUEST_FRAME_EXTENTS"))
+			return false;
 
 		XEvent event;
 		memset(&event, 0, sizeof(event));
@@ -647,7 +650,7 @@ namespace clan
 
 	void X11Window::refresh_frame_extents()
 	{
-		assert(atoms.is_hint_supported("_NET_FRAME_EXTENTS"));
+		assert(atoms.exists("_NET_FRAME_EXTENTS"));
 
 		unsigned long  item_count;
 		// _NET_FRAME_EXTENTS, left, right, top, bottom, CARDINAL[4]/32
@@ -842,8 +845,16 @@ namespace clan
 
 	void X11Window::request_repaint()
 	{
-		// TODO Properly generate ExposeEvents. This is the lazy way.
-		XClearArea(handle.display, handle.window, 0, 0, 1, 1, true);
+		XExposeEvent expose = { Expose, 0 };
+		expose.send_event = true;
+		expose.display = handle.display;
+		expose.window = handle.window;
+		expose.x = 0;
+		expose.y = 0;
+		expose.width = client_window_size.width;
+		expose.height = client_window_size.height;
+		expose.count = 0;
+		XSendEvent(handle.display, handle.window, False, 0, (XEvent *) &expose);
 		XFlush(handle.display);
 	}
 
@@ -1270,14 +1281,15 @@ namespace clan
 
 			if (compensate_frame_extents_on_MapNotify)
 			{
-				clan::System::sleep(50);
+				if (atoms.exists("_NET_FRAME_EXTENTS"))
+				{
+					refresh_frame_extents();
+					last_position.x -= frame_extents.left;
+					last_position.y -= frame_extents.top;
 
-				refresh_frame_extents();
-				last_position.x -= frame_extents.left;
-				last_position.y -= frame_extents.top;
-
-				// Set the window position.
-				set_position(last_position);
+					// Set the window position.
+					set_position(last_position);
+				}
 
 				compensate_frame_extents_on_MapNotify = false;
 			}
@@ -1420,4 +1432,23 @@ namespace clan
 			break;
 		} // end-switch event.type
 	} // end-fn process_event
+
+	void X11Window::get_keyboard_modifiers(bool &mod_shift, bool &mod_alt, bool &mod_ctrl) const
+	{
+		auto p = dynamic_cast<InputDeviceProvider_X11Keyboard *>(keyboard.get_provider());
+		if (!p)
+		{
+			mod_shift = mod_alt = mod_ctrl = false;
+		}
+		else
+		{
+			p->get_keyboard_modifiers(mod_shift, mod_alt, mod_ctrl);
+		}
+	}
+
+	Point X11Window::get_mouse_position() const
+	{
+		auto p = dynamic_cast<InputDeviceProvider_X11Mouse *>(mouse.get_provider());
+		return (!p) ? Point() : p->get_device_position();
+	}
 }
