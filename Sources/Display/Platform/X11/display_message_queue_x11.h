@@ -42,44 +42,15 @@ namespace clan
 
 	class DisplayMessageQueue_X11 : public RunLoopImpl
 	{
-	public:
-		DisplayMessageQueue_X11();
-		~DisplayMessageQueue_X11();
-
-		::Display *get_display();
-		void add_client(X11Window *window);
-		void remove_client(X11Window *window);
-
+	private:
 		class ThreadData : public ThreadLocalStorageData
 		{
 		public:
 			ThreadData() {}
 			std::vector<X11Window *> windows;
-			bool modified = false;	// Set by add_client and remove_client
+			std::vector<X11Window *> windows_born;
+			std::vector<X11Window *> windows_died;
 		};
-
-		std::shared_ptr<ThreadData> get_thread_data();
-
-		void set_mouse_capture(X11Window *window, bool state);
-
-		// The library will be opened / closed by this class
-		// Returns 0 if the library could not be found
-		// Currently, only supports a single library
-		void *dlopen_opengl(const char *filename, int flag);
-
-		void run() override;
-		void exit() override;
-		bool process(int timeout_ms) override;
-		void post_async_work_needed() override;
-
-	private:
-		void process_message();
-		void prune_clients();
-
-		X11Window *current_mouse_capture_window = nullptr;
-		::Display *display = nullptr;
-		void *dlopen_lib_handle = nullptr;
-		bool client_modified = false;
 
 		class NotifyEvent
 		{
@@ -121,6 +92,40 @@ namespace clan
 		private:
 			int notify_handle[2];
 		};
+
+	public:
+		using ThreadDataPtr = std::shared_ptr<ThreadData>;
+
+		DisplayMessageQueue_X11();
+		~DisplayMessageQueue_X11();
+
+		::Display *get_display();
+
+		ThreadDataPtr get_thread_data();
+
+		void    add_client(X11Window *window);
+		void remove_client(X11Window *window);
+
+
+		void set_mouse_capture(X11Window *window, bool state);
+
+		// The library will be opened / closed by this class
+		// Returns 0 if the library could not be found
+		// Currently, only supports a single library
+		void *dlopen_opengl(const char *filename, int flag);
+
+		void run() override;
+		void exit() override;
+		bool process(int timeout_ms) override;
+		void post_async_work_needed() override;
+
+	private:
+		void process_message();
+		void prune_clients();
+
+		X11Window *current_mouse_capture_window = nullptr;
+		::Display *display = nullptr;
+		void *dlopen_lib_handle = nullptr;
 
 		NotifyEvent async_work_event;
 		NotifyEvent exit_event;

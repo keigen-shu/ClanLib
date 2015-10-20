@@ -223,15 +223,13 @@ public: // X11Window operation mirror
 
 	void set_position(const Rect &rect, bool of_client_area) override
 	{
-		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
-		x11_window.set_size(rect.get_size());
-		x11_window.set_position(rect.get_top_left());
+		x11_window.set_size(rect.get_size(), of_client_area);
+		x11_window.set_position(rect.get_top_left(), of_client_area);
 	}
 
 	void set_size(int width, int height, bool of_client_area) override
 	{
-		if (!of_client_area) throw Exception("X window frame extents calculation is not yet supported.");
-		x11_window.set_size({ width, height });
+		x11_window.set_size({ width, height }, of_client_area);
 	}
 
 	void set_minimum_size(int width, int height, bool of_client_area) override

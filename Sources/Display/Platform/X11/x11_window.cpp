@@ -72,6 +72,9 @@
 //! to root-window-space.
 // #define CL_X11_USE_XWindowAttribute_COORDINATES_WHEN_TRANSLATING
 
+//! See usage in clan::X11Window::create().
+#define CL_X11_IS_RETARDED
+
 namespace clan
 {
 	//! Minimum resize size clamp value.
@@ -146,6 +149,7 @@ namespace clan
 
 		// Create a brand new colormap for the window.
 		colormap = XCreateColormap(handle.display, root_window, visual->visual, AllocNone);
+		xFlush(15);
 
 		// Setup basic window attributes.
 		XSetWindowAttributes window_attributes = XSetWindowAttributes
@@ -153,7 +157,7 @@ namespace clan
 			.background_pixmap      = None,
 			.background_pixel       = 0xFF0E0E0Eul,
 			.border_pixmap          = CopyFromParent,
-			.border_pixel           = 0x00000000ul,
+			.border_pixel           =  0ul,
 			.bit_gravity            = NorthWestGravity, // Always retain top-left corner.
 			.win_gravity            = NorthWestGravity, // Always maintain windows relative to top-left position.
 			.backing_store          = WhenMapped,
@@ -179,6 +183,7 @@ namespace clan
 		window_size.width  = std::max(_ResizeMinimumSize_, window_size.width);
 		window_size.height = std::max(_ResizeMinimumSize_, window_size.height);
 
+		log_event("debug", "clan::X11Window::create(): Running XCreateWindow with size %1x%2.", window_size.width, window_size.height);
 
 		// Create the X11 window.
 		// - Ignore the starting window position because modern WMs will reset
@@ -187,21 +192,29 @@ namespace clan
 		//   favour size values here over those on WMNormalHints later.
 		// - No X11 border width.
 		// - Use XVisualInfo supplied by callee.
-		// - Apply all window attributes we specified.
+		// - Apply all window attributes we specified, unless X11 is retarded.
 		// - Force InputOutput window class. Never use visual->c_class, because
 		//   using that will fail for no damn reason.
 		handle.window = XCreateWindow(
 				handle.display, root_window, 0, 0, // display, window, x, y
 				static_cast<unsigned int>(window_size.width), static_cast<unsigned int>(window_size.height), 0, // width, height, border_width
 				visual->depth, InputOutput/* visual->c_class */, visual->visual,
-				CWBackPixmap | CWBackPixel | CWBorderPixmap | CWBorderPixel | CWBitGravity | CWWinGravity |
-				CWBackingStore | CWBackingPlanes | CWBackingPixel | CWSaveUnder | CWEventMask | CWDontPropagate |
-				CWColormap | CWCursor, &window_attributes
+#ifndef CL_X11_IS_RETARDED
+				CWBackPixmap    | CWBackPixel       |
+				CWBorderPixmap  | CWBorderPixel     |
+				CWBitGravity    | CWWinGravity      |
+				CWBackingStore  | CWBackingPlanes   | CWBackingPixel    |
+				CWSaveUnder     | CWEventMask       | CWDontPropagate   |
+				CWColormap      | CWCursor          ,
+#else
+				                  CWBorderPixel     |
+				CWSaveUnder     | CWEventMask     /*| -------------*/   |
+				CWColormap    /*| ------*/          ,
+#endif
+				&window_attributes
 				);
 
-		log_event("debug", "clan::X11Window::create(): Running XCreateWindow with size %1x%2.", window_size.width, window_size.height);
-
-		XFlush(handle.display);
+		xFlush(15);
 
 		if (!handle.window)
 			throw Exception("Failed to create the X11 window.");
@@ -544,8 +557,7 @@ namespace clan
 			throw Exception("Window already in mapped state.");
 
 		XMapWindow(handle.display, handle.window);
-		XFlush(handle.display);
-		clan::System::sleep(50);
+		xFlush(50);
 	}
 
 	void X11Window::unmap_window()
@@ -554,7 +566,7 @@ namespace clan
 			throw Exception("Window already in unmapped state.");
 
 		XUnmapWindow(handle.display, handle.window);
-		XFlush(handle.display);
+		xFlush();
 	}
 
 	void X11Window::refresh_client_window_attributes()
@@ -594,8 +606,8 @@ namespace clan
 			::Display *display, XEvent *event, XPointer arg
 	) {
 		X11Window *self = (X11Window*)arg;
-		assert(self->atoms.is_hint_supported("_NET_REQUEST_FRAME_EXTENTS"));
-		assert(display == self->get_handle().display);
+		assert(self->atoms.exists("_NET_REQUEST_FRAME_EXTENTS"));
+		assert(self->get_handle().display == display);
 
 		if (event->type != PropertyNotify)
 			return False;
@@ -643,7 +655,7 @@ namespace clan
 				return true;
 			}
 
-			clan::System::sleep(5);
+			System::sleep(5);
 			timer--;
 		}
 	}
@@ -677,20 +689,65 @@ namespace clan
 
 	////
 
-	void X11Window::set_position(const Point &new_pos)
+	void X11Window::set_position(Point new_pos, bool of_client_area)
 	{
 		if (xGetWindowAttributes().map_state == IsUnmapped)
-			throw Exception("Window is unmapped.");
+		//	throw Exception("Window is unmapped.");
+		{
+			// TODO Deprecated. Has bugs.
+			//
+			// XMoveWindow does not do anything when the window is unmapped. To
+			// simplify X11Window, we really should throw an Exception here to
+			// prevent people from moving unmapped windows.
+			//
+			// Currently, present_popup will (eventually) call this function as
+			// if X11Window is supposed to keep track of the window positioning
+			// at all times. We don't really do that because currently we cannot
+			// differentiate between where clWM thinks the window should be and
+			// where the user's window manager thinks the window should be.
+			// Implementing that will potentially cause magical moving windows
+			// if we got it wrong or if the window manager (almost all of them)
+			// isn't managing windows properly. Additionally, many WMs don't
+			// fully support _NET_FRAME_EXTENTS and _NET_REQUEST_FRAME_EXTENTS,
+			// which makes debugging such issues difficult.
+			//
+			// However, clWM::preset_popup still needs this behaviour, so here
+			// we have a hack/workaround to make X11Window call this function
+			// again with new values once the window has been mapped (via a
+			// MapNotify event).
+			//
+			// This implementation is bugged in that frame extent compensation
+			// will be applied into the new position even if of_client_area is
+			// set to false, so now your new window may have a slighly different
+			// positioning than you intended.
+			log_event("debug", "Calling clan::X11Window::set_position() when window is unmapped is deprecated.");
+			compensate_frame_extents_on_MapNotify = true;
+			
+			last_position = new_pos;
+			return;
+		}
+
+		// Compensate for frame extents.
+		if (of_client_area)
+		{
+			new_pos.x -= frame_extents.left;
+			new_pos.y -= frame_extents.top;
+		}
 
 		// This will cause a ConfigureNotify event to be sent.
 		XMoveWindow(handle.display, handle.window, new_pos.x, new_pos.y);
-		last_position = new_pos;
 	}
 
-	void X11Window::set_size(const Size &new_size)
+	void X11Window::set_size(Size new_size, bool of_client_area)
 	{
-		if (xGetWindowAttributes().map_state == IsUnmapped)
-			throw Exception("Window is unmapped.");
+		// TODO Check if XResizeWindow works even when window IsUnmapped
+
+		// Compensate for frame extents.
+		if (!of_client_area)
+		{
+			new_size.width -= frame_extents.left + frame_extents.right;
+			new_size.height -= frame_extents.top + frame_extents.bottom;
+		}
 
 		// This will cause a ConfigureNotify event to be sent.
 		XResizeWindow(handle.display, handle.window, new_size.width, new_size.height);
@@ -855,7 +912,7 @@ namespace clan
 		expose.height = client_window_size.height;
 		expose.count = 0;
 		XSendEvent(handle.display, handle.window, False, 0, (XEvent *) &expose);
-		XFlush(handle.display);
+		xFlush();
 	}
 
 	void X11Window::show_system_cursor()
@@ -968,6 +1025,16 @@ namespace clan
 	////////////////////////////////////////////////////////////////////////////
 	//  X11 Function Wrappers
 	////////////////////////////////////////////////////////////////////////////
+	void X11Window::xFlush(int ms) const
+	{
+		XFlush(handle.display);
+		if (ms > 0)
+		{	// Sleep and flush again
+			System::sleep(ms);
+			XFlush(handle.display);
+		}
+	}
+
 	XWindowAttributes X11Window::xGetWindowAttributes() const
 	{
 		XWindowAttributes attr;
@@ -1150,6 +1217,7 @@ namespace clan
 			break;
 		}
 
+#ifdef DEBUG
 		// The following two events are generated and used like so:
 		//
 		// 1. Someone calls XCopyArea or XCopyPlane to copy graphics from a
@@ -1194,6 +1262,7 @@ namespace clan
 			// This is probably used by WMs to implement Alt-Tabbing.
 			log_event("debug", "Ignored CirculateNotify event.");
 			break;
+#endif
 		case ConfigureNotify: // Interested.
 		{
 			const XConfigureEvent &curr_XCE = event.xconfigure;
@@ -1260,6 +1329,7 @@ namespace clan
 			last_XCE = curr_XCE;
 			break;
 		}
+#ifdef DEBUG
 		case CreateNotify: // Ignored; we do not create child windows.
 			log_event("debug", "Ignored CreateNotify event.");
 			break;
@@ -1270,6 +1340,7 @@ namespace clan
 		case GravityNotify: // Ignored; we do not have child windows.
 			log_event("debug", "Ignored GravityNotify event.");
 			break;
+#endif
 		case MapNotify: // Interested.
 		{
 			XMapEvent e = event.xmap;
@@ -1286,10 +1357,10 @@ namespace clan
 					refresh_frame_extents();
 					last_position.x -= frame_extents.left;
 					last_position.y -= frame_extents.top;
-
-					// Set the window position.
-					set_position(last_position);
 				}
+
+				// Set the window position.
+				set_position(last_position);
 
 				compensate_frame_extents_on_MapNotify = false;
 			}
@@ -1323,6 +1394,7 @@ namespace clan
 			break;
 		}
 
+#ifdef DEBUG
 		case MappingNotify: // Ignored; unused.
 			// We don't care about mapping changes to modifier keys on keyboard
 			// (aside from Ctrl, Alt, Shift and Super) keyboard symbols (we
@@ -1345,7 +1417,7 @@ namespace clan
 		case ColormapNotify: // Ignored; we don't care about colormaps; we only have one.
 			log_event("debug", "Ignored ColormapNotify event.");
 			break;
-
+#endif
 		// Client communication events
 		case ClientMessage: // Interested. 
 		{
@@ -1417,6 +1489,7 @@ namespace clan
 			// TODO ICCCM §2?
 			break;
 		}
+#ifdef DEBUG
 		case SelectionClear: // INTERESTED TODO
 			log_event("debug", "SelectionClear event unimplemented!");
 			break;
@@ -1426,7 +1499,7 @@ namespace clan
 		case SelectionRequest: // INTERESTED TODO
 			log_event("debug", "SelectionRequest event unimplemented!");
 			break;
-
+#endif
 		default:
 			log_event("debug", "Ignoring event of unknown type.");
 			break;

@@ -131,7 +131,9 @@ namespace clan
 		for (const auto &elem : _atoms_)
 		{
 			_map_[elem] = XInternAtom(_display_, elem.c_str(), True);
+#ifdef DEBUG
 			log_event("debug", "  %1\t: %2 %3", elem, _map_[elem], (_map_[elem] == None) ? "None" : "OK");
+#endif
 		}
 
 		// Get _NET_SUPPORTED and check for every atom.
@@ -163,7 +165,9 @@ namespace clan
 			}
 		}
 
+#ifdef DEBUG
 		log_event("debug", "  ... and %1 others that we don't use.", item_count - _net_.size());
+#endif
 
 		XFree(data);
 	}

@@ -109,20 +109,22 @@ namespace clan
 
 		//! Moves the client window to a new position.
 		//!
-		//! The position supplied should be interpreted as the top-left point of
-		//! the window frame, not the actual drawable client area. Some ICCCM
-		//! non-compliant WMs may still move the window to a different position.
+		//! The default behaviour is such that the position supplied will be
+		//! interpreted as the top-left point of the window frame, not the
+		//! actual drawable client area. Some ICCCM non-compliant WMs may still
+		//! move the window to a different position.
 		//!
 		//! \warn The window MUST be in mapped state or an exception will be
 		//!       thrown. The underlying X function is known to do nothing when
 		//!       the window is unmapped.
-		void set_position(const Point &new_pos);
+		void set_position(Point new_pos, bool of_client_area = false);
 
 		//! Changes the size of the client window.
 		//!
-		//! The size always refers to the client drawable area and does not
-		//! include the lengths of the window frames.
-		void set_size(const Size &new_size);
+		//! The default behaviour is such that the size supplied refers to the
+		//! client drawable area and does not include the lengths of the window
+		//! frames.
+		void set_size(Size new_size, bool of_client_area = true);
 
 		//! Changes the minimum size at which the client window can be resized.
 		//!
@@ -227,6 +229,9 @@ namespace clan
 		static Bool xCheckIfEventPredicate_RequestFrameExtents(::Display*, XEvent*, XPointer);
 
 	private: // Xlib function wrappers.
+		// 
+		void xFlush(int ms = 0) const;
+
 		XWindowAttributes xGetWindowAttributes() const;
 
 		Size xGetScreenSize_px();
@@ -263,8 +268,9 @@ namespace clan
 
 		//! If set to true, last_position will not be modified until a MapNotify
 		//! event is received in process_events. Once received, frame_extents
-		//! will be calculated, last_position will be adjusted accordingly and
-		//! then this boolean is set to `false`.
+		//! will be calculated, last_position will be adjusted accordingly, the
+		//! window will be moved with the new value and then this boolean is
+		//! reset to `false`.
 		bool compensate_frame_extents_on_MapNotify;
 
 		Rect frame_extents; //!< The lengths of the window frame deco added by WM.

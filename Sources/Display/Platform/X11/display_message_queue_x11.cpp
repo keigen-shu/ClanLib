@@ -29,12 +29,13 @@
 
 #include "Display/precomp.h"
 #include "API/Core/System/databuffer.h"
+#include "API/Core/System/system.h"
 #include "API/Core/System/thread_local_storage.h"
 #include "display_message_queue_x11.h"
 #include "x11_window.h"
-#include <dlfcn.h>
 #include "../../setup_display.h"
-#include "API/Core/System/system.h"
+#include <algorithm>
+#include <dlfcn.h>
 
 namespace clan
 {
@@ -49,7 +50,8 @@ namespace clan
 			XCloseDisplay(display);
 		}
 
-		// This MUST be called after XCloseDisplay - It is used for http://www.xfree86.org/4.8.0/DRI11.html
+		// This MUST be called after XCloseDisplay.
+		// See http://www.xfree86.org/4.8.0/DRI11.html
 		if (dlopen_lib_handle)
 		{
 			dlclose(dlopen_lib_handle);
@@ -58,7 +60,9 @@ namespace clan
 
 	void *DisplayMessageQueue_X11::dlopen_opengl(const char *filename, int flag)
 	{
-		if (!dlopen_lib_handle)		// This is a shared resource. We assume that filename and flags will never change, which makes sense in this case
+		// This is a shared resource. We assume that its filename and flags will
+		// never change, which makes sense in this case.
+		if (!dlopen_lib_handle)
 		{
 			dlopen_lib_handle = ::dlopen(filename, flag);
 		}
@@ -78,33 +82,22 @@ namespace clan
 
 	void DisplayMessageQueue_X11::add_client(X11Window *window)
 	{
-		std::shared_ptr<ThreadData> thread_data = get_thread_data();
-		thread_data->windows.push_back(window);
-		thread_data->modified = true;
+		this->get_thread_data()->windows_born.push_back(window);
 	}
 
 	void DisplayMessageQueue_X11::remove_client(X11Window *window)
 	{
-		std::shared_ptr<ThreadData> thread_data = get_thread_data();
-		std::vector<X11Window *>::size_type index, size;
-		size = thread_data->windows.size();
-		for (index = 0; index < size; index++)
-		{
-			if (thread_data->windows[index] == window)
-			{
-				thread_data->windows.erase(thread_data->windows.begin() + index);
-				break;
-			}
-		}
-		thread_data->modified = true;
+		this->get_thread_data()->windows_died.push_back(window);
 	}
 
-	std::shared_ptr<DisplayMessageQueue_X11::ThreadData> DisplayMessageQueue_X11::get_thread_data()
+	DisplayMessageQueue_X11::ThreadDataPtr DisplayMessageQueue_X11::get_thread_data()
 	{
-		std::shared_ptr<ThreadData> data = std::dynamic_pointer_cast<ThreadData>(ThreadLocalStorage::get_variable("DisplayMessageQueue_X11::thread_data"));
+		ThreadDataPtr data = std::dynamic_pointer_cast<ThreadData>(
+				ThreadLocalStorage::get_variable("DisplayMessageQueue_X11::thread_data")
+				);
 		if (!data)
 		{
-			data = std::shared_ptr<ThreadData>(new ThreadData);
+			data = ThreadDataPtr(new ThreadData);
 			ThreadLocalStorage::set_variable("DisplayMessageQueue_X11::thread_data", data);
 		}
 		return data;
@@ -194,39 +187,64 @@ namespace clan
 
 	void DisplayMessageQueue_X11::process_message()
 	{
-		std::shared_ptr<ThreadData> data = get_thread_data();
+		auto display = get_display();
+		auto data    = get_thread_data();
 
-		::Display *display = get_display();
 		XEvent event;
 		while (XPending(display) > 0)
 		{
-			XNextEvent(display, &event);
+			XNextEvent(display, &event); // TODO Use XCheckIfEvent to select event based on window?
 
-			for (auto & elem : data->windows)
+			::Window event_target = event.xany.window;
+
+			auto is_target = [&](const X11Window* elem) -> bool
 			{
-				X11Window *window = elem;
-				if (window->get_window() == event.xany.window)
-				{
-					X11Window *mouse_capture_window = current_mouse_capture_window;
-					if (mouse_capture_window == nullptr)
-						mouse_capture_window = window;
+				return elem->get_handle().window == event_target;
+			};
 
-					window->process_message(event, mouse_capture_window);
-				}
+			// Skip windows marked as dead.
+			auto dead = std::find_if(data->windows_died.begin(), data->windows_died.end(), is_target);
+			if (dead != data->windows_died.cend())
+				continue;
+
+			// End loop if window is newborn.
+			auto born = std::find_if(data->windows_born.begin(), data->windows_born.end(), is_target);
+			if (born != data->windows_born.cend())
+			{
+				XPutBackEvent(display, &event);
+				break; // End this loop now so that windows in windows_born gets added to the main list.
 			}
+
+			// Get window from list.
+			auto iter = std::find_if(data->windows.begin(), data->windows.end(), is_target);
+			if (iter == data->windows.end()) // Event not in window list
+#ifndef DEBUG
+				continue;
+#else
+			{
+				log_event("debug", "DisplayMessageQueue_X11::process_message(): dropping with event with unknown target window.");
+				continue;
+			}
+#endif
+
+			X11Window *window = *iter;
+			X11Window *mouse_capture_window = (current_mouse_capture_window == nullptr) ? window : current_mouse_capture_window;
+
+			// Process the event.
+			window->process_event(event, mouse_capture_window);
 		}
 
-		do
-		{
-			data->modified = false;
+		// Remove dead windows.
+		for (auto &elem : data->windows_died)
+			std::remove(data->windows.begin(), data->windows.end(), elem);
+		
+		data->windows_died.clear();
 
-			for (auto & elem : data->windows)
-			{
-				elem->process_window();
-				if (data->modified)
-					break;
-			}
-		}while(data->modified);
+		// Insert newborn windows.
+		for (auto &elem : data->windows_born)
+			data->windows.push_back(elem);
+
+		data->windows_born.clear();
 	}
 }
 
